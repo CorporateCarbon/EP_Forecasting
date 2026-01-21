@@ -1,292 +1,184 @@
 # -*- coding: utf-8 -*-
 """
-Schedule 1 ACCU Forecaster (Anniversary Year) — Robust xlwings runner
---------------------------------------------------------------------
-Assumptions (per your confirmation):
-- Summary!D30 = Calculated ACCUs for the current reporting period (NOT carbon stock)
-- Summary inputs:
-    B11 = RP start date
-    B12 = RP end date
-    B13 = "FullCAM date" (must correspond to a date present in CEA01!A:A in many workbooks)
-- Optional (if present/desired):
-    Calculations!A28 = Project carbon stock total (for reference only)
+ACCU Forecast Runner (xlwings)
+--------------------------------
+- Iterates yearly RP dates
+- Sets Summary!B11 (RP start), Summary!B12 (RP end), Summary!B13 (FullCAM date = RP date)
+- Forces full recalc
+- Reads Calculations!A28 (Project carbon stock total) and A86 (RP)
+- Populates 'ACCU summary' table (tblACCU) for the matching Date row:
+    Date | Carbon stock | Net abatement amount | Calculated ACCU | Issued ACCU | RP
+- Writes a separate CSV of forecasts
 
-Key design points:
-- Builds anniversary reporting periods from PROJECT_START_DATE.
-- For each RP end, picks the nearest available FullCAM date from CEA01!A:A within tolerance.
-- Forces CalculateFullRebuild twice (some workbooks need this) with retries if D30 is blank.
-- Outputs a CSV:
-    RP#, RP Start, RP End, FullCAM Date used, Calculated ACCUs (D30), Cumulative ACCUs, Carbon Stock (optional)
+Open the file and update:
+- excel_path → your workbook path
+- (Optional) output_start_date → first RP FullCAM date to simulate
+- (Optional) project_start → used to compute a 30-year horizon if you don’t pass horizon_years
+
+It assumes:
+
+- ACCU summary has a Table named tblACCU with columns:
+- Date, Carbon stock, Net abatement amount, Calculated ACCU, Issued ACCU, RP
+- Your totals and RP are already calculated at Calculations!A28 and Calculations!A86 (as you described).
+
+If your Calculated ACCU should apply a different rule than “equals Net abatement”, tweak the calc_accu line in write_tblaccu_row().
+
+
 """
-#%%##
-from __future__ import annotations
 
+#%%##
 import os
 import csv
-from dataclasses import dataclass
-from datetime import datetime, date, timedelta
-from typing import Optional, List, Tuple
-
-import xlwings as xw
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
+import xlwings as xw
+#%%##
+excel_path = r"C:\Users\GeorginaDoyle\github\EP_Forecasting\PF_2020\Calculators\PF_Sch1_FC24_Calculator.xlsx" 
+out_dir = os.path.dirname(excel_path)
+csv_out = os.path.join(out_dir, f"C_Sch1_FC16_ACCU_Forecast_{datetime.now():%Y%m%d-%H%M%S}.csv")
 
 
-# ---------------------------
-# USER SETTINGS (EDIT THESE)
-# ---------------------------
-EXCEL_PATH = r"C:\Users\GeorginaDoyle\github\EP_Forecasting\PF_2020\PF_SCh1_FC24_cp.xlsx"
+project_start = datetime(2022, 6, 25)      # used for 30-yr horizon if not provided
+start_cea_row = 15                          # CEA01 row for first FullCAM (RP end) date
+cea_step_rows = 12                          # +12 rows per year (monthly entries)
 
-# Project start date (anniversary-based reporting)
-PROJECT_START_DATE = date(2022, 6, 25)  # <-- EDIT if needed
+accu_summary_first_row = 4   # first output row in ACCU Summary
 
-# Forecast horizon in years (typically 25 for crediting period, but set as required)
-HORIZON_YEARS = 25
-
-# Tolerance when matching RP end date to an available FullCAM date in CEA01!A:A
-FULLCAM_TOLERANCE_DAYS = 5
-
-# If your workbook requires dates as TEXT (leading apostrophe), keep True.
-WRITE_DATES_AS_TEXT = True
-
-# Recalc behaviour
-FULL_REBUILD_TIMES_PER_ATTEMPT = 2
-RECALC_RETRIES = 2  # retries if D30 is still blank
-
-# Output CSV
-CSV_OUT = os.path.join(
-    os.path.dirname(EXCEL_PATH),
-    f"Sch1_FC24_Forecast_{datetime.now():%Y%m%d-%H%M%S}.csv"
-)
-
-# Optional: read carbon stock total for reference (can set to None to disable)
-READ_CARBON_STOCK = True
-CARBON_STOCK_CELL = ("Calculations", "A28")  # sheet, cell
-
-
-# ---------------------------
-# Helper functions
-# ---------------------------
-def parse_excel_date(v) -> Optional[date]:
-    """Convert Excel cell value to date."""
-    if v is None or v == "":
-        return None
-    if isinstance(v, datetime):
-        return v.date()
-    if isinstance(v, date):
-        return v
-    s = str(v).strip()
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def safe_float(v) -> Optional[float]:
-    try:
-        if v is None or v == "":
-            return None
-        return float(v)
-    except Exception:
-        return None
-
-
-def write_date_cell(ws, addr: str, d: date):
-    """Write a date into a cell in the format the workbook expects."""
-    if WRITE_DATES_AS_TEXT:
-        ws.range(addr).number_format = "@"
-        ws.range(addr).value = "'" + d.strftime("%d/%m/%Y")
-    else:
-        ws.range(addr).number_format = "dd/mm/yyyy"
-        ws.range(addr).value = datetime(d.year, d.month, d.day)
-
-
-def calculate_full_rebuild(wb, times: int = 2):
-    """Force Excel full rebuild recalculation (often needed for complex workbooks)."""
-    for _ in range(times):
-        wb.app.api.CalculateFullRebuild()
-
-
-def load_fullcam_dates(ws_cea) -> List[date]:
-    """Load CEA01 column A into a list of dates."""
-    col = ws_cea.range("A1").expand("down").value
-    if not isinstance(col, list):
-        col = [col]
-    dates: List[date] = []
-    for v in col:
-        d = parse_excel_date(v)
-        if d:
-            dates.append(d)
-    return dates
-
-
-def find_nearest_fullcam_date(fullcam_dates: List[date], target: date, tolerance_days: int) -> Optional[date]:
-    """Find a FullCAM date within +/- tolerance_days of target; prefer exact match."""
-    if not fullcam_dates:
-        return None
-
-    # Exact match first
-    if target in set(fullcam_dates):
-        return target
-
-    best = None
-    best_abs = None
-    for d in fullcam_dates:
-        diff = abs((d - target).days)
-        if diff <= tolerance_days:
-            if best is None or diff < best_abs:
-                best = d
-                best_abs = diff
-    return best
-
-
-def build_anniversary_periods(project_start: date, years: int) -> List[Tuple[date, date]]:
-    """
-    Anniversary reporting periods:
-      RP1: start = project_start
-           end   = project_start + 1 year - 1 day
-      RP2: start = project_start + 1 year
-           end   = project_start + 2 years - 1 day
-      etc.
-    """
-    periods: List[Tuple[date, date]] = []
-    rp_start = project_start
-    for _ in range(years):
-        rp_end = (rp_start + relativedelta(years=1)) - timedelta(days=1)
-        periods.append((rp_start, rp_end))
-        rp_start = rp_start + relativedelta(years=1)
-    return periods
-
-
-@dataclass
-class ForecastRow:
-    rp_index: int
-    rp_start: date
-    rp_end: date
-    fullcam_date_used: date
-    calculated_accus: Optional[float]   # Summary!D30
-    cumulative_accus: Optional[float]   # running sum of calculated_accus (None-safe)
-    carbon_stock_total: Optional[float] # optional reference value
-
-
-# ---------------------------
-# Main runner
-# ---------------------------
-def run_forecast() -> str:
-    if not os.path.exists(EXCEL_PATH):
-        raise FileNotFoundError(f"Excel file not found: {EXCEL_PATH}")
-
-    periods = build_anniversary_periods(PROJECT_START_DATE, HORIZON_YEARS)
-
-    with xw.App(visible=True, add_book=False) as app:
-        wb = app.books.open(EXCEL_PATH)
-
-        # Sheets
-        ws_sum = wb.sheets["Summary"]
-        ws_cea = wb.sheets["CEA01"]
-
-        # Preload FullCAM dates once
-        fullcam_dates = load_fullcam_dates(ws_cea)
-        if not fullcam_dates:
-            raise RuntimeError("No FullCAM dates found in CEA01 column A.")
-
-        rows: List[ForecastRow] = []
-        cum = 0.0
-        cum_has_value = False  # track whether we've had any non-null outputs
-
-        for i, (rp_start, rp_end) in enumerate(periods, start=1):
-            # Find a valid FullCAM date near RP end (this is the key NULL fix)
-            fc_date = find_nearest_fullcam_date(fullcam_dates, rp_end, FULLCAM_TOLERANCE_DAYS)
-
-            # If RP end isn't present, also try RP end +1 day (common if monthly table is month-end)
-            if fc_date is None:
-                fc_date = find_nearest_fullcam_date(fullcam_dates, rp_end + timedelta(days=1), FULLCAM_TOLERANCE_DAYS)
-
-            # If still None, fall back to nearest to RP start (less ideal, but better than NULL cascade)
-            if fc_date is None:
-                fc_date = find_nearest_fullcam_date(fullcam_dates, rp_start, FULLCAM_TOLERANCE_DAYS)
-
-            if fc_date is None:
-                # Can't run this RP reliably
-                rows.append(ForecastRow(
-                    rp_index=i,
-                    rp_start=rp_start,
-                    rp_end=rp_end,
-                    fullcam_date_used=rp_end,
-                    calculated_accus=None,
-                    cumulative_accus=(cum if cum_has_value else None),
-                    carbon_stock_total=None
-                ))
+def ensure_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        raise ValueError("Date cell is empty.")
+    if isinstance(value, str):
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
                 continue
+    raise ValueError(f"Could not parse date: {value!r}")
 
-            # Write inputs
-            write_date_cell(ws_sum, "B11", rp_start)
-            write_date_cell(ws_sum, "B12", rp_end)
-            write_date_cell(ws_sum, "B13", fc_date)
+def set_summary_dates_as_text(ws_summary, start_dt, end_dt):
+    # Summary!B11 (start), B12 (end), B13 (same as end) as TEXT 'dd/mm/yyyy
+    for addr in ("B11", "B12", "B13"):
+        ws_summary.range(addr).number_format = "@"
+    ws_summary.range("B11").value = "'" + start_dt.strftime("%d/%m/%Y")
+    ws_summary.range("B12").value = "'" + end_dt.strftime("%d/%m/%Y")
+    ws_summary.range("B13").value = "'" + end_dt.strftime("%d/%m/%Y")
 
-            # Recalc with retries until D30 resolves
-            accus = None
-            carbon_stock = None
+def get_d30_cumulative(ws_summary):
+    val = ws_summary.range("D30").value
+    try:
+        return float(val) if val not in (None, "") else 0.0
+    except Exception:
+        return 0.0
 
-            for _attempt in range(RECALC_RETRIES + 1):
-                calculate_full_rebuild(wb, times=FULL_REBUILD_TIMES_PER_ATTEMPT)
+def write_accu_summary_row(ws_accu, row_idx, rp_end_date, d30_cum, net_abatement, calc_accu, rp_label):
+    """
+    ACCU Summary column mapping (so A90->B<row> is numeric!):
+      A: Date (RP end / FullCAM)
+      B: Carbon Stock (D30 cumulative)   <-- numeric target for Calculations!A90
+      C: Net Abatement (ΔD30)
+      D: Calculated ACCU
+      E: Issued ACCU (placeholder)
+      F: RP label string (e.g., '2025-2026')
+    """
+    ws_accu.range(f"A{row_idx}").number_format = "dd/mm/yyyy"
+    ws_accu.range(f"A{row_idx}").value = rp_end_date
+    ws_accu.range(f"B{row_idx}").value = d30_cum
+    ws_accu.range(f"C{row_idx}").value = net_abatement
+    ws_accu.range(f"D{row_idx}").value = calc_accu
+    ws_accu.range(f"E{row_idx}").value = None
+    ws_accu.range(f"F{row_idx}").value = rp_label
 
-                accus = safe_float(ws_sum.range("D30").value)  # <-- your confirmed output
+def set_calculations_a90_to_stock(ws_calc, target_row):
+    """Point Calculations!A90 at numeric carbon stock in 'ACCU Summary'!B<row>."""
+    ws_calc.range("A90").formula = f"='ACCU Summary'!B{target_row}"
 
-                if READ_CARBON_STOCK:
-                    sheet, cell = CARBON_STOCK_CELL
-                    carbon_stock = safe_float(wb.sheets[sheet].range(cell).value)
+def run_forecast(excel_path, csv_out, project_start, horizon_years=None, visible=True):
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(f"Excel file not found: {excel_path}")
 
-                if accus is not None:
-                    break
+    with xw.App(visible=visible, add_book=False) as app:
+        wb = app.books.open(excel_path)
+        ws_sum  = wb.sheets["Summary"]
+        ws_calc = wb.sheets["Calculations"]
+        ws_cea  = wb.sheets["CEA01"]
+        ws_accu = wb.sheets["ACCU Summary"]
 
-            # Update cumulative
-            if accus is not None:
-                cum += accus
-                cum_has_value = True
+        # Determine first RP from CEA01
+        first_end = ensure_datetime(ws_cea.range(f"A{start_cea_row}").value)
+        first_start = datetime(first_end.year - 1, 7, 1)
 
-            rows.append(ForecastRow(
-                rp_index=i,
-                rp_start=rp_start,
-                rp_end=rp_end,
-                fullcam_date_used=fc_date,
-                calculated_accus=accus,
-                cumulative_accus=(cum if cum_has_value else None),
-                carbon_stock_total=carbon_stock
-            ))
+        if horizon_years is None:
+            horizon_years = 30 - ((first_start - project_start).days // 365)
 
-        # Save workbook (optional but usually helpful)
-        wb.save()
+        prev_cum = None
+        cea_row = start_cea_row
+        accu_row = accu_summary_first_row
 
-    # Write CSV
-    with open(CSV_OUT, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow([
-            "RP",
-            "RP_Start",
-            "RP_End",
-            "FullCAM_Date_Used",
-            "Calculated_ACCUs (Summary!D30)",
-            "Cumulative_ACCUs",
-            "Carbon_Stock_Total (optional)",
-        ])
-        for r in rows:
+        with open(csv_out, "w", newline="") as f:
+            w = csv.writer(f)
             w.writerow([
-                r.rp_index,
-                r.rp_start.isoformat(),
-                r.rp_end.isoformat(),
-                r.fullcam_date_used.isoformat(),
-                r.calculated_accus,
-                r.cumulative_accus,
-                r.carbon_stock_total,
+                "Project Name",           # A
+                "RP Start",               # B
+                "RP End (FullCAM)",       # C
+                "D30 Cumulative",         # D
+                "Net Abatement (ΔD30)",   # E
+                "Calculated ACCU"         # F
             ])
 
-    return CSV_OUT
+            for _ in range(horizon_years):
+                # RP end (FullCAM) from CEA01
+                end_dt = ensure_datetime(ws_cea.range(f"A{cea_row}").value)
+                start_dt = datetime(end_dt.year - 1, 7, 1)
 
+                # Write Summary dates as TEXT and force full rebuild twice (mimic old behaviour)
+                set_summary_dates_as_text(ws_sum, start_dt, end_dt)
+                ws_cea.activate(); ws_sum.activate(); ws_calc.activate()
+                wb.app.api.CalculateFullRebuild()
+                wb.app.api.CalculateFullRebuild()
+
+                # Read cumulative and compute deltas
+                d30_cum = get_d30_cumulative(ws_sum)
+                net_abatement = d30_cum - prev_cum if prev_cum is not None else d30_cum
+                calc_accu = net_abatement
+
+                # RP label (string) for human readability, stored in F
+                rp_label = f"{start_dt.year}-{end_dt.year}"
+
+                # Write the row (B gets numeric carbon stock)
+                write_accu_summary_row(
+                    ws_accu, accu_row,
+                    rp_end_date=end_dt,
+                    d30_cum=d30_cum,
+                    net_abatement=net_abatement,
+                    calc_accu=calc_accu,
+                    rp_label=rp_label
+                )
+
+                # Now set A90 to the numeric carbon stock cell we just wrote
+                set_calculations_a90_to_stock(ws_calc, accu_row)
+
+                # CSV row
+                proj_name = ws_sum.range("B3").value or "Unknown Project"
+                w.writerow([proj_name, start_dt.date(), end_dt.date(), d30_cum, net_abatement, calc_accu])
+
+                # advance
+                prev_cum = d30_cum
+                cea_row += cea_step_rows
+                accu_row += 1
+
+        wb.save()
+    return csv_out
 
 if __name__ == "__main__":
-    out = run_forecast()
-    print(f"✅ Schedule 1 anniversary forecast written to: {out}")
-
+    print("Running forecast...")
+    out_path = run_forecast(
+        excel_path=excel_path,
+        csv_out=csv_out,
+        project_start=project_start,
+        horizon_years=None,
+        visible=True,
+    )
+    print(f"Done. CSV written to: {out_path}")
 # %%

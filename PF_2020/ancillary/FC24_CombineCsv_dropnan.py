@@ -8,7 +8,7 @@ import pandas as pd
 from datetime import datetime
 
 # === Use existing folder path set earlier ===
-inputDir = r"C:\Users\GeorginaDoyle\Corporate Carbon Pty Ltd\Corporate Carbon - 04. CARBON DELIVERY\08. ERF Projects\Coalara Park Australian Sandalwood Plantation Project - AT\FullCAM\September 2025 Reforecast\250910_Schedule1_FullCAM2024\Output"  # Change this to your directory
+inputDir = r"C:\Users\GeorginaDoyle\Corporate Carbon Pty Ltd\Corporate Carbon - 04. CARBON DELIVERY\08. ERF Projects\Coalara Park Australian Sandalwood Plantation Project - AT\FullCAM\September 2025 Reforecast\250910_Schedule1_FullCAM2024\Output"
 output_folder = r"C:\Users\GeorginaDoyle\Downloads"  # You can change this if needed
 os.chdir(inputDir)
 
@@ -56,19 +56,36 @@ for f in filenames:
                 print(f"Skipping {f}: missing columns: {missing_cols}")
                 continue
 
-            df = df[desired_columns]
+            # Keep Year column for fallback date fill, then drop later
+            df = df[["Year (yr)"] + desired_columns]
 
-            # Coerce metrics to numeric and drop rows with any NaN values
+            # Coerce metrics to numeric
             for col in desired_columns[1:]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
+            # If Date is NaT, fill with 21/12/<year> based on nearest year value
+            if df["Date"].isna().any():
+                year_series = df["Year (yr)"].copy()
+                year_series = year_series.fillna(method="ffill").fillna(method="bfill")
+                fallback_dates = pd.to_datetime(
+                    {
+                        "year": year_series,
+                        "month": 12,
+                        "day": 21,
+                    },
+                    errors="coerce",
+                )
+                df.loc[df["Date"].isna(), "Date"] = fallback_dates[df["Date"].isna()]
+
+            # Drop rows with NaN in metrics or unresolved Date
             before = len(df)
-            df = df.dropna(subset=desired_columns, how="any")
+            df = df.dropna(subset=["Date"] + desired_columns[1:], how="any")
             dropped = before - len(df)
             if dropped:
-                print(f"Note: dropped {dropped} rows with NaN values in {f}")
+                print(f"Note: dropped {dropped} rows with NaN metrics/Date in {f}")
 
             df["Date"] = df["Date"].dt.strftime("%d/%m/%Y").astype(str)
+            df = df[desired_columns]
 
             sheet_name = f.replace(".csv", "")[:31]
             file_dict[sheet_name] = df

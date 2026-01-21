@@ -28,9 +28,11 @@ from dateutil.relativedelta import relativedelta
 # Manual inputs (or read from Excel)
 # -----------------------------
 # From your Sch4 calculator:
+# #FC2024
 # CBASE = 596.78        # Calculations!B21  (net baseline carbon stock for CEA, Eq6 input)
 # CLT   = 184419.56     # Calculations!B28  (predicted long-term project scenario carbon stock, Eq9 input)
-
+ 
+#FC2016
 CBASE = 418.14 #value from b21
 CLT   = 149697.25  #Value from B28
 PERMANENCE_YEARS = 25
