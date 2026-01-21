@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, Tuple, Any, Dict
-
-from openpyxl import Workbook, load_workbook
-from openpyxl.worksheet.worksheet import Worksheet
-from openpyxl.utils.datetime import from_excel
-from dateutil.relativedelta import relativedelta
 import calendar
-# ---------- Config container (matches your GUI config style) ----------
-@dataclass
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, Tuple
 
+import xlwings as xw
+from dateutil.relativedelta import relativedelta
+import time
+import win32com.client as win32
+
+
+# ---------------- Config ----------------
+@dataclass
 class EngineConfig:
     starting_rp_number: int
     rp_length_months: int
@@ -27,271 +28,223 @@ class EngineConfig:
     save_aggregated_output: str
 
 
-# ---------- Engine ----------
-class ForecastEngine:
-    """
-    Loads the calculator workbook and indexes the 'Forecast_script_helper' sheet's Column A labels
-    for fast repeated writes/reads across many iterations.
-    """
+# ---------------- Date helpers ----------------
+def month_end(dt: datetime) -> datetime:
+    last_day = calendar.monthrange(dt.year, dt.month)[1]
+    return datetime(dt.year, dt.month, last_day)
 
+def add_months_month_end(dt: datetime, months: int) -> datetime:
+    # shift by N months then coerce to month-end
+    return month_end(dt + relativedelta(months=months))
+
+def excel_serial_to_datetime(val: float) -> datetime:
+    # Excel serial date (1900 system): day 1 = 1900-01-01, but Excel has the 1900 leap-year bug.
+    # xlwings usually returns datetime already, but this is a safe fallback.
+    return datetime(1899, 12, 30) + timedelta(days=float(val))
+
+
+# ---------------- Engine ----------------
+class ForecastEngineXL:
     TARGET_SHEET = "Forecast_script_helper"
 
-    # Labels (Column A) we care about
+    # Column A labels
     LABEL_CURRENT_RP = "Current RP"
     LABEL_RP_END_YEAR = "Current RP End Year"
     LABEL_RP_END_MONTH = "current rp end month"
     LABEL_RP_END_DAY = "current rp end day"
-    LABEL_ACCUS_REALISED = "ACCUs Realised"
     LABEL_RP_LENGTH = "RP Length"
+    LABEL_ACCUS_REALISED = "ACCUs Realised"
 
+    def __init__(self, book: xw.Book):
+        self.book = book
+        self.ws = self.book.sheets[self.TARGET_SHEET]
 
-    def __init__(self, input_calculator_file: str):
-        self.input_path = Path(input_calculator_file)
-        if not self.input_path.exists():
-            raise FileNotFoundError(f"Input calculator file not found: {self.input_path}")
+        # Build label index (Column A)
+        self.label_row: Dict[str, int] = self._index_labels_col_a()
 
-        # data_only=True so we cannot write and see formulas if present, but we see displayed values
-        self.wb = load_workbook(self.input_path, data_only=True)
-        if self.TARGET_SHEET not in self.wb.sheetnames:
-            raise ValueError(
-                f"Worksheet '{self.TARGET_SHEET}' not found in {self.input_path.name}. "
-                f"Available sheets: {self.wb.sheetnames}"
-            )
-
-        self.ws: Worksheet = self.wb[self.TARGET_SHEET]
-
-        # Build an index of normalized label -> row number for fast lookup
-        self.label_row: Dict[str, int] = self._index_labels_in_column_a(self.ws)
-
-        # Validate we can find the key labels up front (fail fast)
+        # Validate required labels exist
         for required in (
             self.LABEL_CURRENT_RP,
             self.LABEL_RP_END_YEAR,
             self.LABEL_RP_END_MONTH,
             self.LABEL_RP_END_DAY,
-            self.LABEL_ACCUS_REALISED,
             self.LABEL_RP_LENGTH,
+            self.LABEL_ACCUS_REALISED,
         ):
             if self._norm(required) not in self.label_row:
-                raise ValueError(
-                    f"Could not find label '{required}' in column A of '{self.TARGET_SHEET}'."
-                )
+                raise ValueError(f"Could not find label '{required}' in column A of '{self.TARGET_SHEET}'.")
 
     @staticmethod
     def _norm(x: Any) -> str:
-        """Normalize labels for matching: string, stripped, lowercased."""
         if x is None:
             return ""
         return str(x).strip().lower()
 
     @staticmethod
-    def _index_labels_in_column_a(ws: Worksheet) -> Dict[str, int]:
-        """
-        Scan column A once and map normalized cell text -> row number.
-        If duplicates exist, the first occurrence is kept.
-        """
-        mapping: Dict[str, int] = {}
-        max_row = ws.max_row or 1
+    def _strip_if_str(v: Any) -> Any:
+        return v.strip() if isinstance(v, str) else v
 
-        for r in range(1, max_row + 1):
-            v = ws.cell(row=r, column=1).value  # column A
-            key = ForecastEngine._norm(v)
+    def _index_labels_col_a(self) -> Dict[str, int]:
+        """
+        Read column A values down to the last used cell and map normalized label -> row number.
+        """
+        # Get contiguous used range down from A1 (fast). If there are gaps, you can replace with used_range logic.
+        colA = self.ws.range("A1:A300").value
+
+        mapping: Dict[str, int] = {}
+        if not isinstance(colA, list):
+            colA = [colA]
+
+        for idx, v in enumerate(colA, start=1):  # idx is row number
+            key = self._norm(v)
             if key and key not in mapping:
-                mapping[key] = r
+                mapping[key] = idx
         return mapping
 
-    @staticmethod
-    def _coerce_stripped_value(v: Any) -> Any:
-        """
-        Ensure we strip whitespace if v is a string. If numeric, leave numeric.
-        User requested: "strip any blank spaces before inputting these values."
-        """
-        if isinstance(v, str):
-            return v.strip()
-        return v
-
-    def write_inputs_and_get_accus(
-        self,
-        starting_rp_number: int,
-        start_year: int,
-        start_month: int,
-        start_day: int,
-        rp_length_months: int,
-    ) -> Tuple[datetime, Any]:
-        """
-        Writes input values next to their labels (col B), then returns:
-          (datetime(start_year,start_month,start_day), value_in_colB_of_ACCUs_Realised_row)
-
-        Designed to be called many times in a loop:
-        - Uses pre-indexed label rows
-        - Only touches a few cells per call
-        """
-
-        # Build the datetime we will return
-        dt = datetime(int(start_year), int(start_month), int(start_day))
-
-        # Lookups are O(1) because of the pre-index
-        row_current_rp = self.label_row[self._norm(self.LABEL_CURRENT_RP)]
-        row_year = self.label_row[self._norm(self.LABEL_RP_END_YEAR)]
-        row_month = self.label_row[self._norm(self.LABEL_RP_END_MONTH)]
-        row_day = self.label_row[self._norm(self.LABEL_RP_END_DAY)]
-        row_rp_length = self.label_row[self._norm(self.LABEL_RP_LENGTH)]
-        # Write values into column B (one column to the right)
-        # Strip any whitespace before writing (as requested)
-        self.ws.cell(row=row_current_rp, column=2).value = self._coerce_stripped_value(starting_rp_number)
-        self.ws.cell(row=row_year, column=2).value = self._coerce_stripped_value(start_year)
-        self.ws.cell(row=row_month, column=2).value = self._coerce_stripped_value(start_month)
-        self.ws.cell(row=row_day, column=2).value = self._coerce_stripped_value(start_day)
-        self.ws.cell(row=row_rp_length, column=2).value = self._coerce_stripped_value(rp_length_months)
-        # Now fetch "ACCUs Realised" from column B
-        row_accus = self.label_row[self._norm(self.LABEL_ACCUS_REALISED)]
-        accus_value = self.ws.cell(row=row_accus, column=2).value
-
-        return dt, accus_value
-
     def get_project_start_date(self) -> datetime:
-        ws = self.ws
+        """
+        Find 'Project Start Date' in column D and return corresponding column E value.
+        """
+        # Read col D down
+        colD = self.ws.range("D1:D300").value
+        if not isinstance(colD, list):
+            colD = [colD]
 
-        for r in range(1, ws.max_row + 1):
-            label = ws.cell(row=r, column=4).value
+        for idx, label in enumerate(colD, start=1):
             if label and str(label).strip().lower() == "project start date":
-                val = ws.cell(row=r, column=5).value
-                
+                val = self.ws.range((idx, 5)).value  # column E
                 if isinstance(val, datetime):
                     return val
                 if isinstance(val, (int, float)):
-                    return from_excel(val)
-                print(val)
-                print(type(val))
-
-                raise ValueError("Project Start Date is not a valid Excel date.")
-
+                    return excel_serial_to_datetime(val)
+                raise ValueError("Project Start Date in column E is not a valid date.")
         raise ValueError("Could not find 'Project Start Date' in column D.")
 
-    def save_calculator_copy(self, output_path: str) -> None:
+    def write_inputs_and_get_accus(
+        self,
+        rp_number: int,
+        rp_end_date: datetime,
+        rp_length_months: int,
+    ) -> Tuple[datetime, Any]:
         """
-        Optional helper: if you want to save a working copy of the calculator after updates.
+        Writes inputs next to labels in column A (into column B), forces calc, returns:
+          (rp_end_date datetime, ACCUs value in column B next to 'ACCUs Realised')
         """
-        self.wb.save(output_path)
+        # Lookup row numbers
+        r_rp = self.label_row[self._norm(self.LABEL_CURRENT_RP)]
+        r_y = self.label_row[self._norm(self.LABEL_RP_END_YEAR)]
+        r_m = self.label_row[self._norm(self.LABEL_RP_END_MONTH)]
+        r_d = self.label_row[self._norm(self.LABEL_RP_END_DAY)]
+        r_len = self.label_row[self._norm(self.LABEL_RP_LENGTH)]
+        r_acc = self.label_row[self._norm(self.LABEL_ACCUS_REALISED)]
 
-    def close(self) -> None:
-        self.wb.close()
+        # Write to column B (col=2) with whitespace stripping
+        self.ws.range((r_rp, 2)).value = self._strip_if_str(rp_number)
+        self.ws.range((r_y, 2)).value = self._strip_if_str(rp_end_date.year)
+        self.ws.range((r_m, 2)).value = self._strip_if_str(rp_end_date.month)
+        self.ws.range((r_d, 2)).value = self._strip_if_str(rp_end_date.day)
+        self.ws.range((r_len, 2)).value = self._strip_if_str(rp_length_months)
 
+        # Force calculation (critical)
+        self.book.app.calculate()
 
-def month_end(dt: datetime) -> datetime:
-    """Return the month-end datetime for dt's month (keeps time at 00:00:00)."""
-    last_day = calendar.monthrange(dt.year, dt.month)[1]
-    return datetime(dt.year, dt.month, last_day)
+        # Read ACCUs (column B next to label)
+        accus_val = self.ws.range((r_acc, 2)).value
 
-def add_months_month_end(dt: datetime, months: int) -> datetime:
-    """
-    Add N months, then coerce to month-end.
-    This enforces end-of-month to end-of-month behavior.
-    """
-    shifted = dt + relativedelta(months=months)
-    return month_end(shifted)
-
-
-# ---------- Aggregated workbook creation ----------
-def create_aggregated_workbook(save_aggregated_output: str) -> None:
-    """
-    Creates a new workbook and saves it to the specified path.
-    """
-    out_path = Path(save_aggregated_output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Aggregated"
-
-    # Minimal headers (optional; you can change later)
-    ws["A1"] = "Date"
-    ws["B1"] = "ACCUs Realised"
-
-    wb.save(out_path)
-    wb.close()
+        return rp_end_date, accus_val
 
 
+# ---------------- Runner ----------------
 def run_engine(config: EngineConfig) -> None:
-    # 1) Create aggregated workbook
-    create_aggregated_workbook(config.save_aggregated_output)
+    # Ensure output folder exists
+    out_path = Path(config.save_aggregated_output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    print("1")
+    # Start Excel (hidden)
+    try:  
+        app = xw.App(visible=True, add_book=False)   # <-- start visible
+        time.sleep(1)                                # <-- give Excel time to create window
+        print("Excel started OK")
 
-    # Open aggregated workbook for writing results
-    agg_wb = load_workbook(config.save_aggregated_output)
-    agg_ws = agg_wb["Aggregated"]
 
-    # Add headers (if you want more than Date/ACCUs)
-    agg_ws["A1"] = "RP Number"
-    agg_ws["B1"] = "RP Start (EOM)"
-    agg_ws["C1"] = "RP End (EOM)"
-    agg_ws["D1"] = "ACCUs Realised"
-
-    # 2) Open calculator + helper sheet (keep open for the whole run)
-    engine = ForecastEngine(config.input_calculator_file)
-
+    except Exception as e:
+        print("FAILED to start Excel")
+        print(type(e), e)
+        raise
+    app.display_alerts = False
+    app.screen_updating = False
+    print("1.5")
+    #calc_mode_prev = app.calculation
+    #app.calculation = "manual"  # faster; we explicitly calculate each iteration
+    print("2")
     try:
-        # --- Decide how many RPs to run ---
+        # Open calculator workbook once
+        book = app.books.open(config.input_calculator_file)
+        engine = ForecastEngineXL(book)
+
+        # Decide n_rps
+        rp_len = int(config.rp_length_months)
+        print("3")
         if config.forecast_number_of_rps is not None:
             n_rps = int(config.forecast_number_of_rps)
         else:
-            project_start_date = engine.get_project_start_date()
-            project_end_date = project_start_date + relativedelta(years=25)
+            project_start = month_end(engine.get_project_start_date())
+            project_end = month_end(project_start + relativedelta(years=25))
 
             current_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
-            end_end = month_end(project_end_date)
-
-            months_to_end = (end_end.year - current_end.year) * 12 + (end_end.month - current_end.month)
-
-            rp_len = int(config.rp_length_months)
+            months_to_end = (project_end.year - current_end.year) * 12 + (project_end.month - current_end.month)
+            print("4")
             n_rps = months_to_end // rp_len
             if months_to_end % rp_len != 0:
                 n_rps += 1
 
-        # --- Loop through RPs ---
-        rp_len = int(config.rp_length_months)
+        # Create aggregated workbook (also via xlwings so saving is easy)
+        out_book = app.books.add()
+        out_sheet = out_book.sheets[0]
+        out_sheet.name = "Aggregated"
+        print("5")
+        # Headers
+        out_sheet.range("A1").value = ["RP Number", "RP Start (EOM)", "RP End (EOM)", "ACCUs Realised"]
 
-        # Interpret the user-provided date as the CURRENT RP END date, coerced to month-end
-        current_rp_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
-
-        # Start date for first RP = same as current end (per your rule: end-of-month to end-of-month, start=prev end)
-        current_rp_start = current_rp_end
-
+        # Starting dates
         start_rp_num = int(config.starting_rp_number)
-
+        current_rp_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
+        current_rp_start = current_rp_end  # per your rule: start = previous end
+        print("6")
+        # Loop RPs
         for i in range(n_rps):
+            print("Loop start")
             rp_num = start_rp_num + i
-
-            # End date advances by RP length months, always to month-end
             next_rp_end = add_months_month_end(current_rp_end, rp_len)
 
-            # Write inputs into calculator for THIS RP
-            dt_returned, accus = engine.write_inputs_and_get_accus(
-                starting_rp_number=rp_num,
-                start_year=next_rp_end.year,
-                start_month=next_rp_end.month,
-                start_day=next_rp_end.day,
+            rp_end_dt, accus = engine.write_inputs_and_get_accus(
+                rp_number=rp_num,
+                rp_end_date=next_rp_end,
                 rp_length_months=rp_len,
             )
 
-            # Record into aggregated workbook
-            # row 2 onward
-            out_row = i + 2
-            agg_ws.cell(row=out_row, column=1).value = rp_num
-            agg_ws.cell(row=out_row, column=2).value = current_rp_start
-            agg_ws.cell(row=out_row, column=3).value = next_rp_end
-            agg_ws.cell(row=out_row, column=4).value = accus
+            # Write row (row index in Excel = i+2)
+            row = i + 2
+            out_sheet.range((row, 1)).value = rp_num
+            out_sheet.range((row, 2)).value = current_rp_start
+            out_sheet.range((row, 3)).value = rp_end_dt
+            out_sheet.range((row, 4)).value = accus
 
-            # Advance to next RP:
-            # next RP starts at previous RP end (your rule)
+            # advance
             current_rp_start = next_rp_end
             current_rp_end = next_rp_end
 
-        # Save aggregated output once at the end
-        agg_wb.save(config.save_aggregated_output)
+        # Save output
+        out_book.save(str(out_path))
+        out_book.close()
+        print("loop close")
+        # Optionally save calculator copy or just close
+        book.close()
 
     finally:
+        # restore settings and quit excel
         try:
-            agg_wb.close()
+            app.calculation = calc_mode_prev
         except Exception:
             pass
-        engine.close()
+        app.quit()

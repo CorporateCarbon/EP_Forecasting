@@ -34,8 +34,9 @@ from typing import Iterable, List, Dict, Optional, Tuple
 # =============================
 REQUIRED_PACKAGES: List[str] = [
     "customtkinter",
-    "openpyxl",
-    "python-dateutil"
+    "xlwings",
+    "python-dateutil",
+    "pywin32"
     # Example packages — replace with what your script needs:
     # "requests>=2.32.0",
     # "pandas==2.2.3",
