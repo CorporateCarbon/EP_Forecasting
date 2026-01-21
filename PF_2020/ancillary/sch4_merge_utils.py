@@ -58,6 +58,8 @@ def _normalise_headers(df: pd.DataFrame) -> pd.DataFrame:
         "C mass of trees  (tC/ha)": "C mass of trees (tC/ha)",
         "C mass of forest debris  (tC/ha)": "C mass of forest debris (tC/ha)",
         "C mass of forest products  (tC/ha)": "C mass of forest products (tC/ha)",
+        "C mass of forest litter and deadwood  (tC/ha)": "C mass of forest debris (tC/ha)",
+        "C mass of forest litter and deadwood (tC/ha)": "C mass of forest debris (tC/ha)",
     }
     for c in df.columns:
         if c in map_variants:

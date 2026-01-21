@@ -7,8 +7,8 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 #%%##
 currentDate = datetime.now().strftime("%Y%m%d")
-excel_path = r"C:\Users\GeorginaDoyle\Downloads\241114_Coalara_RP2_ACCU_Calc.xlsx"
-csvOut = rf"C:\Users\GeorginaDoyle\Downloads\{currentDate}_Prv_method_25yr_AbatementSummary.csv"
+excel_path = r"C:\Users\GeorginaDoyle\github\EP_Forecasting\PF_2020\PF_SCh1_FC24_cp.xlsx"
+csvOut = rf"C:\Users\GeorginaDoyle\Downloads\{currentDate}_Sch1_FC24_method_25yr_AbatementSummary.csv"
 #excel_path = r"C:\Users\GeorginaDoyle\Downloads\Coalara_RP3_ACCU_Calc_v3.xlsx"
 #csvOut = rf"C:\Users\GeorginaDoyle\Downloads\{currentDate}_New_method_25yr_AbatementSummary_RP3.csv"
 #%%##

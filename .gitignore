@@ -179,3 +179,5 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+PF_2020/260121_Method Comparison Summary .docx
+PF_2020/260121_CP_MethodComparisons.xlsx
