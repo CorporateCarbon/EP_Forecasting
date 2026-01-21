@@ -9,7 +9,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.utils.datetime import from_excel
 from dateutil.relativedelta import relativedelta
-
+import calendar
 # ---------- Config container (matches your GUI config style) ----------
 @dataclass
 
@@ -50,8 +50,8 @@ class ForecastEngine:
         if not self.input_path.exists():
             raise FileNotFoundError(f"Input calculator file not found: {self.input_path}")
 
-        # data_only=False so we can write and see formulas if present
-        self.wb = load_workbook(self.input_path, data_only=False)
+        # data_only=True so we cannot write and see formulas if present, but we see displayed values
+        self.wb = load_workbook(self.input_path, data_only=True)
         if self.TARGET_SHEET not in self.wb.sheetnames:
             raise ValueError(
                 f"Worksheet '{self.TARGET_SHEET}' not found in {self.input_path.name}. "
@@ -148,7 +148,7 @@ class ForecastEngine:
         accus_value = self.ws.cell(row=row_accus, column=2).value
 
         return dt, accus_value
-    
+
     def get_project_start_date(self) -> datetime:
         ws = self.ws
 
@@ -156,11 +156,13 @@ class ForecastEngine:
             label = ws.cell(row=r, column=4).value
             if label and str(label).strip().lower() == "project start date":
                 val = ws.cell(row=r, column=5).value
-
+                
                 if isinstance(val, datetime):
                     return val
                 if isinstance(val, (int, float)):
                     return from_excel(val)
+                print(val)
+                print(type(val))
 
                 raise ValueError("Project Start Date is not a valid Excel date.")
 
@@ -174,6 +176,20 @@ class ForecastEngine:
 
     def close(self) -> None:
         self.wb.close()
+
+
+def month_end(dt: datetime) -> datetime:
+    """Return the month-end datetime for dt's month (keeps time at 00:00:00)."""
+    last_day = calendar.monthrange(dt.year, dt.month)[1]
+    return datetime(dt.year, dt.month, last_day)
+
+def add_months_month_end(dt: datetime, months: int) -> datetime:
+    """
+    Add N months, then coerce to month-end.
+    This enforces end-of-month to end-of-month behavior.
+    """
+    shifted = dt + relativedelta(months=months)
+    return month_end(shifted)
 
 
 # ---------- Aggregated workbook creation ----------
@@ -197,36 +213,85 @@ def create_aggregated_workbook(save_aggregated_output: str) -> None:
 
 
 def run_engine(config: EngineConfig) -> None:
+    # 1) Create aggregated workbook
     create_aggregated_workbook(config.save_aggregated_output)
+
+    # Open aggregated workbook for writing results
+    agg_wb = load_workbook(config.save_aggregated_output)
+    agg_ws = agg_wb["Aggregated"]
+
+    # Add headers (if you want more than Date/ACCUs)
+    agg_ws["A1"] = "RP Number"
+    agg_ws["B1"] = "RP Start (EOM)"
+    agg_ws["C1"] = "RP End (EOM)"
+    agg_ws["D1"] = "ACCUs Realised"
+
+    # 2) Open calculator + helper sheet (keep open for the whole run)
     engine = ForecastEngine(config.input_calculator_file)
 
     try:
-        # Decide n_rps
+        # --- Decide how many RPs to run ---
         if config.forecast_number_of_rps is not None:
             n_rps = int(config.forecast_number_of_rps)
         else:
             project_start_date = engine.get_project_start_date()
             project_end_date = project_start_date + relativedelta(years=25)
 
-            current_date = datetime(config.start_year, config.start_month, config.start_day)
-            current_to_end_months = (project_end_date.year - current_date.year) * 12 + (project_end_date.month - current_date.month)
+            current_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
+            end_end = month_end(project_end_date)
 
-            # number of RPs = months / rp_length_months
-            n_rps = current_to_end_months // int(config.rp_length_months)
-            if current_to_end_months % int(config.rp_length_months) != 0:
-                n_rps += 1  # include partial final RP
+            months_to_end = (end_end.year - current_end.year) * 12 + (end_end.month - current_end.month)
 
-        # Example call (you’ll loop this later)
-        dt, accus = engine.write_inputs_and_get_accus(
-            starting_rp_number=config.starting_rp_number,
-            rp_length_months=config.rp_length_months,
-            start_year=config.start_year,
-            start_month=config.start_month,
-            start_day=config.start_day,
-        )
+            rp_len = int(config.rp_length_months)
+            n_rps = months_to_end // rp_len
+            if months_to_end % rp_len != 0:
+                n_rps += 1
 
-        print("n_rps:", n_rps)
-        print("Returned:", dt, accus)
+        # --- Loop through RPs ---
+        rp_len = int(config.rp_length_months)
+
+        # Interpret the user-provided date as the CURRENT RP END date, coerced to month-end
+        current_rp_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
+
+        # Start date for first RP = same as current end (per your rule: end-of-month to end-of-month, start=prev end)
+        current_rp_start = current_rp_end
+
+        start_rp_num = int(config.starting_rp_number)
+
+        for i in range(n_rps):
+            rp_num = start_rp_num + i
+
+            # End date advances by RP length months, always to month-end
+            next_rp_end = add_months_month_end(current_rp_end, rp_len)
+
+            # Write inputs into calculator for THIS RP
+            dt_returned, accus = engine.write_inputs_and_get_accus(
+                starting_rp_number=rp_num,
+                start_year=next_rp_end.year,
+                start_month=next_rp_end.month,
+                start_day=next_rp_end.day,
+                rp_length_months=rp_len,
+            )
+
+            # Record into aggregated workbook
+            # row 2 onward
+            out_row = i + 2
+            agg_ws.cell(row=out_row, column=1).value = rp_num
+            agg_ws.cell(row=out_row, column=2).value = current_rp_start
+            agg_ws.cell(row=out_row, column=3).value = next_rp_end
+            agg_ws.cell(row=out_row, column=4).value = accus
+
+            # Advance to next RP:
+            # next RP starts at previous RP end (your rule)
+            current_rp_start = next_rp_end
+            current_rp_end = next_rp_end
+
+        # Save aggregated output once at the end
+        agg_wb.save(config.save_aggregated_output)
 
     finally:
+        try:
+            agg_wb.close()
+        except Exception:
+            pass
         engine.close()
