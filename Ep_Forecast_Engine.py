@@ -84,6 +84,17 @@ class ForecastEngineXL:
     def _strip_if_str(v: Any) -> Any:
         return v.strip() if isinstance(v, str) else v
 
+    def get_project_metadata(self) -> tuple[Any, Any]:
+        """
+        Returns:
+          project_name -> Calculator!A1
+          erf -> Forecast_script_helper!B1
+        """
+        project_name = self.book.sheets["Calculator"].range("A1").value
+        erf = self.book.sheets["Forecast_script_helper"].range("B1").value
+        return project_name, erf
+
+
     def _index_labels_col_a(self) -> Dict[str, int]:
         """
         Read column A values down to the last used cell and map normalized label -> row number.
@@ -204,7 +215,11 @@ def run_engine(config: EngineConfig) -> None:
         out_sheet.name = "Aggregated"
         print("5")
         # Headers
-        out_sheet.range("A1").value = ["RP Number", "RP Start (EOM)", "RP End (EOM)", "ACCUs Realised"]
+
+
+        project_name, erf = engine.get_project_metadata()
+
+        out_sheet.range("A1").value = ["RP Number", "RP Start (EOM)", "RP End (EOM)", "ACCUs Realised", project_name, erf]
 
         # Starting dates
         start_rp_num = int(config.starting_rp_number)
@@ -233,6 +248,8 @@ def run_engine(config: EngineConfig) -> None:
             # advance
             current_rp_start = next_rp_end
             current_rp_end = next_rp_end
+
+
 
         # Save output
         out_book.save(str(out_path))
