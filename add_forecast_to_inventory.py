@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from openpyxl import load_workbook, Workbook
 
@@ -54,8 +54,10 @@ FORECAST_TO_INVENTORY_MAP: Dict[str, str] = {
 def _norm(x: Any) -> str:
     return "" if x is None else str(x).strip()
 
+
 def _lower_norm(x: Any) -> str:
     return _norm(x).lower()
+
 
 def _build_header_map(ws, header_row: int = 1) -> Dict[str, int]:
     mapping: Dict[str, int] = {}
@@ -65,6 +67,7 @@ def _build_header_map(ws, header_row: int = 1) -> Dict[str, int]:
         if key and key not in mapping:
             mapping[key] = col
     return mapping
+
 
 def _ensure_headers(ws, required_headers: List[str]) -> Dict[str, int]:
     header_map = _build_header_map(ws, 1)
@@ -82,12 +85,14 @@ def _ensure_headers(ws, required_headers: List[str]) -> Dict[str, int]:
             next_col += 1
     return header_map
 
+
 def _find_sheet_by_keywords(wb, keywords: List[str]):
     for name in wb.sheetnames:
         lname = name.lower()
         if all(k.lower() in lname for k in keywords):
             return wb[name]
     return None
+
 
 def _find_row_by_value(ws, header_map: Dict[str, int], header_name: str, value: Any) -> Optional[int]:
     key = _lower_norm(header_name)
@@ -101,6 +106,7 @@ def _find_row_by_value(ws, header_map: Dict[str, int], header_name: str, value: 
         if _norm(ws.cell(row=r, column=col).value) == target:
             return r
     return None
+
 
 def _to_datetime(v):
     """
@@ -140,8 +146,10 @@ def _write(ws, headers: Dict[str, int], row: int, header_name: str, value: Any) 
         return
     ws.cell(row=row, column=headers[key]).value = value
 
+
 def _row_as_list(ws, row: int, max_col: int) -> List[Any]:
     return [ws.cell(row=row, column=c).value for c in range(1, max_col + 1)]
+
 
 def _append_table(ws_out, headers: List[str], rows: List[List[Any]]) -> None:
     for c, h in enumerate(headers, start=1):
@@ -172,7 +180,7 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     rp_num_col = f_headers[_lower_norm("RP Number")]
 
     forecast_rows: List[Dict[str, Any]] = []
-    cutoff_start_dt: Optional[datetime] = None
+    cutoff_start_dt: Optional[date] = None  # NOTE: this is a date, not datetime
 
     for r in range(2, f_ws.max_row + 1):
         rp_val = f_ws.cell(row=r, column=rp_num_col).value
@@ -180,7 +188,7 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
             continue
 
         start_val = f_ws.cell(row=r, column=rp_start_col).value
-        start_dt = _to_datetime(start_val)
+        start_dt = _to_datetime(start_val)  # returns date
         if start_dt is None:
             raise ValueError(f"Row {r}: RP Start (EOM) missing or not a date.")
 
@@ -190,8 +198,8 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
         forecast_rows.append({
             "row_index": r,
             "RP Number": f_ws.cell(row=r, column=f_headers[_lower_norm("RP Number")]).value,
-            "RP Start (EOM)": start_dt,
-            "RP End (EOM)": _to_datetime(f_ws.cell(row=r, column=f_headers[_lower_norm("RP End (EOM)")]).value),
+            "RP Start (EOM)": start_dt,  # date
+            "RP End (EOM)": _to_datetime(f_ws.cell(row=r, column=f_headers[_lower_norm("RP End (EOM)")]).value),  # date
             "ACCUs Realised": f_ws.cell(row=r, column=f_headers[_lower_norm("ACCUs Realised")]).value,
         })
 
@@ -225,7 +233,9 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     inv_rpend_col = i_headers[_lower_norm("Reporting Period - End")]
 
     # --- Snapshot: all inventory rows where ERF matches Registry ID (BEFORE deletion) ---
-    inventory_snapshot_headers = [inventory_ws.cell(row=1, column=c).value for c in range(1, inventory_ws.max_column + 1)]
+    inventory_snapshot_headers = [
+        inventory_ws.cell(row=1, column=c).value for c in range(1, inventory_ws.max_column + 1)
+    ]
     inv_match_rows_before: List[List[Any]] = []
     for r in range(2, inventory_ws.max_row + 1):
         if _norm(inventory_ws.cell(row=r, column=inv_registry_col).value) == erf:
@@ -235,12 +245,11 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     deleted_rows: List[List[Any]] = []
     kept_rows: List[List[Any]] = []
 
-    # iterate bottom-up so deletes don't shift later rows
     for r in range(inventory_ws.max_row, 1, -1):
         if _norm(inventory_ws.cell(row=r, column=inv_registry_col).value) != erf:
             continue
 
-        rp_end_dt = _to_datetime(inventory_ws.cell(row=r, column=inv_rpend_col).value)
+        rp_end_dt = _to_datetime(inventory_ws.cell(row=r, column=inv_rpend_col).value)  # date
         # If RP End is blank/unparseable, treat as NOT deletable (kept)
         if rp_end_dt is None:
             kept_rows.append(_row_as_list(inventory_ws, r, inventory_ws.max_column))
@@ -252,7 +261,6 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
         else:
             kept_rows.append(_row_as_list(inventory_ws, r, inventory_ws.max_column))
 
-    # kept_rows/deleted_rows were collected bottom-up; reverse for human readability
     kept_rows.reverse()
     deleted_rows.reverse()
 
@@ -275,16 +283,16 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
             dest_field = "Project Number" if src_key == "project id" else field
             _write(inventory_ws, i_headers, out_row, dest_field, val)
 
-        # forecast -> inventory
+        # forecast -> inventory (NOTE: fr values are already DATE objects)
         _write(inventory_ws, i_headers, out_row, "RP", fr["RP Number"])
-        _write(inventory_ws, i_headers, out_row, "Reporting Period - Start", fr["RP Start (EOM)"].date())
-        _write(inventory_ws, i_headers, out_row, "Reporting Period - End", fr["RP End (EOM)"].date())
+        _write(inventory_ws, i_headers, out_row, "Reporting Period - Start", fr["RP Start (EOM)"])
+        _write(inventory_ws, i_headers, out_row, "Reporting Period - End", fr["RP End (EOM)"])
         _write(inventory_ws, i_headers, out_row, "Total Amount (ACCUs)", fr["ACCUs Realised"])
 
-        # derived
-        rp_end_dt = fr["RP End (EOM)"]
-        _write(inventory_ws, i_headers, out_row, "Forecasted Submission Date", (rp_end_dt + timedelta(days=2)).date())
-        _write(inventory_ws, i_headers, out_row, "Date - Total Amount", (rp_end_dt + timedelta(days=92)).date())
+        # derived (date math stays date-only)
+        rp_end_dt = fr["RP End (EOM)"]  # date
+        _write(inventory_ws, i_headers, out_row, "Forecasted Submission Date", rp_end_dt + timedelta(days=2))
+        _write(inventory_ws, i_headers, out_row, "Date - Total Amount", rp_end_dt + timedelta(days=92))
 
         # fixed
         _write(inventory_ws, i_headers, out_row, "Status", "Forecasted")
@@ -310,7 +318,7 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     s1["E1"] = "Rows Added"
     s1["A2"] = run_date
     s1["B2"] = erf
-    s1["C2"] = cutoff_start_dt.date()
+    s1["C2"] = cutoff_start_dt  # already a date
     s1["D2"] = len(deleted_rows)
     s1["E2"] = rows_written
 
@@ -319,16 +327,10 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     _append_table(s2, inventory_snapshot_headers, inv_match_rows_before)
 
     # Sheet 3: Not deleted + forecasts that replace deleted
-    # We'll store:
-    #   - kept inventory rows (those NOT deleted)
-    #   - then a blank line
-    #   - then a small forecast table
     s3 = delta_wb.create_sheet("Keep vs Forecast Replace")
 
-    # kept rows section
     s3["A1"] = "KEPT inventory rows (Registry ID == ERF, RP End <= cutoff)"
     if kept_rows:
-        # headers on row 2, data row 3+
         for c, h in enumerate(inventory_snapshot_headers, start=1):
             s3.cell(row=2, column=c).value = h
         for i, row_vals in enumerate(kept_rows, start=3):
@@ -338,7 +340,6 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     else:
         start_forecast_block_row = 4
 
-    # forecast section
     s3.cell(row=start_forecast_block_row, column=1).value = "FORECAST rows to be written (replacement set)"
     forecast_headers = ["RP Number", "RP Start (EOM)", "RP End (EOM)", "ACCUs Realised"]
     for c, h in enumerate(forecast_headers, start=1):
@@ -347,8 +348,8 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     for i, fr in enumerate(forecast_rows, start=0):
         rr = start_forecast_block_row + 2 + i
         s3.cell(row=rr, column=1).value = fr["RP Number"]
-        s3.cell(row=rr, column=2).value = fr["RP Start (EOM)"]
-        s3.cell(row=rr, column=3).value = fr["RP End (EOM)"]
+        s3.cell(row=rr, column=2).value = fr["RP Start (EOM)"]  # date
+        s3.cell(row=rr, column=3).value = fr["RP End (EOM)"]    # date
         s3.cell(row=rr, column=4).value = fr["ACCUs Realised"]
 
     # Save delta output

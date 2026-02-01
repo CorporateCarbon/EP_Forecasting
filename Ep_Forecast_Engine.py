@@ -219,7 +219,7 @@ def run_engine(config: EngineConfig) -> None:
 
         project_name, erf = engine.get_project_metadata()
 
-        out_sheet.range("A1").value = ["RP Number", "RP Start (EOM)", "RP End (EOM)", "ACCUs Realised", project_name, erf]
+        out_sheet.range("A1").value = ["Name", "Registry ID", "RP", "Reporting Period - Start", "Reporting Period - End", "ACCUs Realised"]
 
         # Starting dates
         start_rp_num = int(config.starting_rp_number)
@@ -240,10 +240,12 @@ def run_engine(config: EngineConfig) -> None:
 
             # Write row (row index in Excel = i+2)
             row = i + 2
-            out_sheet.range((row, 1)).value = rp_num
-            out_sheet.range((row, 2)).value = current_rp_start
-            out_sheet.range((row, 3)).value = rp_end_dt
-            out_sheet.range((row, 4)).value = accus
+            out_sheet.range((row, 1)).value = project_name
+            out_sheet.range((row, 2)).value = erf
+            out_sheet.range((row, 3)).value = rp_num
+            out_sheet.range((row, 4)).value = current_rp_start
+            out_sheet.range((row, 5)).value = rp_end_dt
+            out_sheet.range((row, 6)).value = accus
 
             # advance
             current_rp_start = next_rp_end
