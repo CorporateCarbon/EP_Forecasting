@@ -33,9 +33,11 @@ def month_end(dt: datetime) -> datetime:
     last_day = calendar.monthrange(dt.year, dt.month)[1]
     return datetime(dt.year, dt.month, last_day)
 
+
 def add_months_month_end(dt: datetime, months: int) -> datetime:
     # shift by N months then coerce to month-end
     return month_end(dt + relativedelta(months=months))
+
 
 def excel_serial_to_datetime(val: float) -> datetime:
     # Excel serial date (1900 system): day 1 = 1900-01-01, but Excel has the 1900 leap-year bug.
@@ -84,16 +86,31 @@ class ForecastEngineXL:
     def _strip_if_str(v: Any) -> Any:
         return v.strip() if isinstance(v, str) else v
 
+    def _get_sheet_case_insensitive(self, wanted_name: str) -> xw.Sheet:
+        """
+        Returns a sheet matching wanted_name (case-insensitive).
+        Raises a clear error if not found.
+        """
+        try:
+            return self.book.sheets[wanted_name]
+        except Exception:
+            wanted_norm = wanted_name.strip().lower()
+            for sh in self.book.sheets:
+                if str(sh.name).strip().lower() == wanted_norm:
+                    return sh
+        raise ValueError(f"Could not find sheet '{wanted_name}' (case-insensitive) in workbook.")
+
     def get_project_metadata(self) -> tuple[Any, Any]:
         """
         Returns:
           project_name -> Calculator!A1
-          erf -> Forecast_script_helper!B1
+          registry_id  -> Calculator!B1
         """
-        project_name = self.book.sheets["Calculator"].range("A1").value
-        erf = self.book.sheets["Forecast_script_helper"].range("B1").value
-        return project_name, erf
-
+        calc = self._get_sheet_case_insensitive("Forecast_script_helper")
+        project_name = calc.range("A1").value
+        registry_id = calc.range("B1").value
+        print("Found name and Registry ID")
+        return project_name, registry_id
 
     def _index_labels_col_a(self) -> Dict[str, int]:
         """
@@ -172,21 +189,20 @@ def run_engine(config: EngineConfig) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     print("1")
     # Start Excel (hidden)
-    try:  
+    try:
         app = xw.App(visible=True, add_book=False)   # <-- start visible
         time.sleep(1)                                # <-- give Excel time to create window
         print("Excel started OK")
-
-
     except Exception as e:
         print("FAILED to start Excel")
         print(type(e), e)
         raise
+
     app.display_alerts = False
     app.screen_updating = False
     print("1.5")
-    #calc_mode_prev = app.calculation
-    #app.calculation = "manual"  # faster; we explicitly calculate each iteration
+    # calc_mode_prev = app.calculation
+    # app.calculation = "manual"  # faster; we explicitly calculate each iteration
     print("2")
     try:
         # Open calculator workbook once
@@ -215,11 +231,16 @@ def run_engine(config: EngineConfig) -> None:
         out_sheet.name = "Aggregated"
         print("5")
         # Headers
+        project_name, registry_id = engine.get_project_metadata()
 
-
-        project_name, erf = engine.get_project_metadata()
-
-        out_sheet.range("A1").value = ["Name", "Registry ID", "RP", "Reporting Period - Start", "Reporting Period - End", "ACCUs Realised"]
+        out_sheet.range("A1").value = [
+            "Name",
+            "Registry ID",
+            "RP",
+            "Reporting Period - Start",
+            "Reporting Period - End",
+            "ACCUs Realised",
+        ]
 
         # Starting dates
         start_rp_num = int(config.starting_rp_number)
@@ -241,7 +262,7 @@ def run_engine(config: EngineConfig) -> None:
             # Write row (row index in Excel = i+2)
             row = i + 2
             out_sheet.range((row, 1)).value = project_name
-            out_sheet.range((row, 2)).value = erf
+            out_sheet.range((row, 2)).value = registry_id
             out_sheet.range((row, 3)).value = rp_num
             out_sheet.range((row, 4)).value = current_rp_start
             out_sheet.range((row, 5)).value = rp_end_dt
@@ -250,8 +271,6 @@ def run_engine(config: EngineConfig) -> None:
             # advance
             current_rp_start = next_rp_end
             current_rp_end = next_rp_end
-
-
 
         # Save output
         out_book.save(str(out_path))
