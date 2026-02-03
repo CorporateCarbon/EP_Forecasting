@@ -159,6 +159,15 @@ def _append_table(ws_out, headers: List[str], rows: List[List[Any]]) -> None:
         for c, v in enumerate(row_vals, start=1):
             ws_out.cell(row=r_idx, column=c).value = v
 
+def _to_float(v) -> float:
+    if v is None or v == "":
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).replace(",", "").strip())
+    except Exception:
+        return 0.0
 
 def add_forecast_to_inventory(config: AppConfig) -> None:
     clean_mi_export(config.master_inventory_workbook)
@@ -292,7 +301,16 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
 
         # forecast -> inventory (NOTE: fr values are already DATE objects)
         _write(inventory_ws, i_headers, out_row, "RP", fr["RP"])
-        _write(inventory_ws, i_headers, out_row, "Reporting Period - Start", fr["Reporting Period - Start"])
+        
+        _write(
+            inventory_ws,
+            i_headers,
+            out_row,
+            "Reporting Period - Start",
+            fr["Reporting Period - Start"] + timedelta(days=1),
+        )
+
+
         _write(inventory_ws, i_headers, out_row, "Reporting Period - End", fr["Reporting Period - End"])
         _write(inventory_ws, i_headers, out_row, "Total Amount (ACCUs)", fr["ACCUs Realised"])
 
@@ -313,6 +331,25 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
 
         rows_written += 1
 
+    # --- Lifetime ACCU delta (new total - removed total) ---
+    accu_header = "Total Amount (ACCUs)"
+
+    # NEW rows (REQUIRED_INVENTORY_HEADERS order)
+    new_idx = {h: i for i, h in enumerate(REQUIRED_INVENTORY_HEADERS)}
+    new_total = 0.0
+    if accu_header in new_idx:
+        col_i = new_idx[accu_header]
+        new_total = sum(_to_float(r[col_i]) for r in new_forecast_rows)
+
+    # REMOVED rows (inventory_snapshot_headers order)
+    snap_idx = {h: i for i, h in enumerate(inventory_snapshot_headers)}
+    removed_total = 0.0
+    if accu_header in snap_idx:
+        col_i = snap_idx[accu_header]
+        removed_total = sum(_to_float(r[col_i]) for r in deleted_rows)
+
+    lifetime_accu_delta = new_total - removed_total
+
     # --- Save master inventory output ---
     out_master = str(Path(config.save_master_inventory_output))
     Path(out_master).parent.mkdir(parents=True, exist_ok=True)
@@ -329,11 +366,13 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
     s1["C1"] = "Cutoff (First RP Start)"
     s1["D1"] = "Rows Deleted"
     s1["E1"] = "Rows Added"
+    s1["F1"] = "Lifetime ACCUs Delta"
     s1["A2"] = run_date
     s1["B2"] = erf
     s1["C2"] = cutoff_start_dt  # already a date
     s1["D2"] = len(deleted_rows)
     s1["E2"] = rows_written
+    s1["F2"] = lifetime_accu_delta
 
     # Sheet 2: All ERF-matching inventory rows (before deletion)
     s2 = delta_wb.create_sheet("Old Inventory Rows")
@@ -402,8 +441,31 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
 
 
 
-    s4 = delta_wb.create_sheet("New Forecasts")
-    _append_table(s4, REQUIRED_INVENTORY_HEADERS, new_forecast_rows)
+    s4 = delta_wb.create_sheet("New Inventory Rows")
+
+    # Headers
+    for c, h in enumerate(REQUIRED_INVENTORY_HEADERS, start=1):
+        s4.cell(row=1, column=c).value = h
+
+    current_row = 2
+
+    # --- KEPT inventory rows first ---
+    if kept_rows:
+        # Build a mapping from snapshot headers -> index
+        snap_index = {h: i for i, h in enumerate(inventory_snapshot_headers)}
+
+        for row_vals in kept_rows:
+            for c, h in enumerate(REQUIRED_INVENTORY_HEADERS, start=1):
+                if h in snap_index:
+                    s4.cell(row=current_row, column=c).value = row_vals[snap_index[h]]
+            current_row += 1
+
+    # --- NEW inventory rows next ---
+    for row_vals in new_forecast_rows:
+        for c, v in enumerate(row_vals, start=1):
+            s4.cell(row=current_row, column=c).value = v
+        current_row += 1
+
     # Save delta output
     out_delta = str(Path(config.save_forecast_delta_output))
     Path(out_delta).parent.mkdir(parents=True, exist_ok=True)
