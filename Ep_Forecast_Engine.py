@@ -153,6 +153,9 @@ class ForecastEngineXL:
                 raise ValueError("Project Start Date in column E is not a valid date.")
         raise ValueError("Could not find 'Project Start Date' in column D.")
 
+    def rp_end_from_start(rp_start, rp_len_months):
+        return rp_start + relativedelta(months=rp_len_months)
+
     def write_inputs_and_get_accus(
         self,
         rp_number: int,
@@ -213,7 +216,7 @@ def run_engine(config: EngineConfig) -> None:
         # Open calculator workbook once
         book = app.books.open(config.input_calculator_file)
         engine = ForecastEngineXL(book)
-
+        final_rp_end = None
         # Decide n_rps
         rp_len = int(config.rp_length_months)
         print("3")
@@ -252,17 +255,22 @@ def run_engine(config: EngineConfig) -> None:
         # Starting dates
         start_rp_num = int(config.starting_rp_number)
         current_rp_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
-        current_rp_start = current_rp_end  # per your rule: start = previous end
+        current_rp_start = datetime(config.start_year, config.start_month, config.start_day)        
         print("6")
         # Loop RPs
         for i in range(n_rps):
             print("Loop start")
             rp_num = start_rp_num + i
-            next_rp_end = add_months_month_end(current_rp_end, rp_len)
+            next_rp_end = current_rp_start + relativedelta(months=rp_len)
 
+
+            # Correctly manage final RP, RP length needs to be adjusted and end date correctly entered.
             if i == n_rps - 1:
                 next_rp_end = final_rp_end   # override the last RP end
-
+                rp_len = (
+                    (final_rp_end.year - current_rp_start.year) * 12
+                    + (final_rp_end.month - current_rp_start.month)
+                )
 
             rp_end_dt, accus = engine.write_inputs_and_get_accus(
                 rp_number=rp_num,
