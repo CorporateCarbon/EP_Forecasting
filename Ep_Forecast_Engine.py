@@ -26,6 +26,7 @@ class EngineConfig:
 
     input_calculator_file: str
     save_aggregated_output: str
+    save_raw_output: str
 
 
 # ---------------- Date helpers ----------------
@@ -295,6 +296,12 @@ def run_engine(config: EngineConfig) -> None:
         out_book.save(str(out_path))
         out_book.close()
         print("loop close")
+
+        # Save RAW output (calculator state after all RPs)
+        raw_out = Path(config.save_raw_output)
+        raw_out.parent.mkdir(parents=True, exist_ok=True)
+        book.save(str(raw_out))
+
         # Optionally save calculator copy or just close
         book.close()
 

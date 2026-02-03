@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from Ep_Forecast_Engine import EngineConfig, run_engine
 
 
@@ -81,7 +81,7 @@ class App(tk.Tk):
         # Discount checkbox
         ttk.Label(
             inputs,
-            text="Dates must match FullCAM Schedule (End of month). Above details are for first RP you are forecasting."
+            text="Enter first day of the first RP to forecast. Should match FullCAM Schedule (Start of Month)"
         ).grid(row=3, column=1, sticky="w", pady=6)
 
         # NEW: Forecast lifecycle checkbox
@@ -229,6 +229,9 @@ class App(tk.Tk):
             _ = date(y, m, d)
         except Exception:
             raise ValueError("Start Date is not a valid calendar date (check Y/M/D).")
+        # Index start date back by one day (business rule)
+        
+        adjusted_start = date(y, m, d) - timedelta(days=1)
 
         forecast_full = bool(self.var_forecast_full_lifecycle.get())
 
@@ -253,9 +256,9 @@ class App(tk.Tk):
         return AppConfig(
             starting_rp_number=starting_rp,
             rp_length_months=rp_months,
-            start_year=y,
-            start_month=m,
-            start_day=d,
+            start_year=adjusted_start.year,
+            start_month=adjusted_start.month,
+            start_day=adjusted_start.day,
             discount_abatement=bool(self.var_discount.get()),
             forecast_full_lifecycle=forecast_full,
             forecast_number_of_rps=forecast_num,
@@ -275,6 +278,7 @@ def run_process(config: AppConfig):
         forecast_full_lifecycle=config.forecast_full_lifecycle,
         forecast_number_of_rps=config.forecast_number_of_rps,
         input_calculator_file=config.input_calculator_file,
+        save_raw_output=config.save_raw_output,
         save_aggregated_output=config.save_aggregated_output,
     )
     run_engine(engine_config)
