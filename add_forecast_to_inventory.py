@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from helpers.clean_mi_export import clean_mi_export
 
 from openpyxl import load_workbook, Workbook
-
+import re
 
 @dataclass
 class AppConfig:
@@ -50,6 +50,47 @@ FORECAST_TO_INVENTORY_MAP: Dict[str, str] = {
     "ACCUs Realised": "Total Amount (ACCUs)",
 }
 
+def _generate_inventory_id(row: Dict[str, Any]) -> str:
+    existing = str(row.get("Inventory ID") or "").strip()
+    if existing:
+        return existing
+
+    status = str(row.get("Status") or "").strip().lower()
+    if status and status != "forecasted":
+        return existing
+
+    raw_name = str(row.get("Name") or "").strip()
+    raw_name_l = raw_name.lower()
+
+    # Exceptions (explicit, no Mt Mulgrave)
+    if raw_name_l.startswith("big creek"):
+        name_part = "Big "
+    elif raw_name_l.startswith("cpc beef herd"):
+        name_part = "CPC "
+    else:
+        name_part = "".join(re.findall(r"[A-Za-z]", raw_name))[:4].title() or "Proj"
+
+    # Date part
+    date_val = row.get("Date - Total Amount") or row.get("Estimated Issuance Date")
+    date_part = "000000"
+    dt = _to_datetime(date_val)
+    if dt:
+        date_part = dt.strftime("%y%m%d")
+
+    # ACCU part
+    accu_val = row.get("Total Amount (ACCUs)") or row.get("Discounted Abatement")
+    try:
+        accu_part = str(int(float(str(accu_val).replace(",", ""))))
+    except Exception:
+        accu_part = "0"
+
+    return f"f-{name_part}-{date_part}-{accu_part}"
+
+def calculate_realised_amount(fee_model: str):
+    if fee_model == "Fee for service":
+        return None
+    elif fee_model == "Offtake":
+        return
 
 def _norm(x: Any) -> str:
     return "" if x is None else str(x).strip()
@@ -321,6 +362,20 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
         # fixed
         _write(inventory_ws, i_headers, out_row, "Status", "Forecasted")
         _write(inventory_ws, i_headers, out_row, "Data Update Date", run_date)
+
+        row_context = {
+            "Name": p_ws.cell(row=p_row, column=p_headers[_lower_norm("Name")]).value,
+            "Status": "Forecasted",
+            "Date - Total Amount": inventory_ws.cell(
+                row=out_row, column=i_headers[_lower_norm("Date - Total Amount")]
+            ).value,
+            "Total Amount (ACCUs)": fr["ACCUs Realised"],
+        }
+
+        inv_id = _generate_inventory_id(row_context)
+
+        _write(inventory_ws, i_headers, out_row, "Inventory ID", inv_id)
+
 
         # Capture the full newly-written row in the REQUIRED_INVENTORY_HEADERS order
         new_forecast_rows.append([
