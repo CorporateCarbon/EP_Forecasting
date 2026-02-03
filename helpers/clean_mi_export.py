@@ -96,29 +96,19 @@ def clean_mi_export(xlsx_path, sheet_name: Optional[str] = None, output_path: Op
         return out_path
 
     # Decide whether to remove the first 2 rows
-    remove_two_rows = False
-    if ws.max_row >= 2:
-        row1_empty = _row_is_empty(ws, 1)
-        row2_empty = _row_is_empty(ws, 2)
-        if row1_empty and row2_empty:
-            remove_two_rows = True
 
-    if remove_two_rows:
-        # Remove any images anchored to rows 1–2, then delete those rows
-        _strip_images_on_rows(ws, max_row_to_strip=2)
-        ws.delete_rows(1, 2)
-    else:
-        # Light sanity check: if the first row is not empty, ensure that all
-        # non-empty values look like header strings. If not, we simply leave it
-        # as-is; downstream validation will catch structural issues.
-        first_row_vals = [cell.value for cell in ws[1]]
-        non_empty_vals = [v for v in first_row_vals if v not in (None, "")]
-        if non_empty_vals and not all(isinstance(v, str) for v in non_empty_vals):
-            # Optional: print a debug hint rather than raising.
-            print(
-                "[clean_mi_export] First row is not empty and contains non-string values; "
-                "no row deletion performed. Check that this sheet really is a Master Inventory export."
-            )
+    # Find the header row where column A == "Name"
+    header_row_idx = None
+    for row_idx in range(1, ws.max_row + 1):
+        cell_val = ws.cell(row=row_idx, column=1).value
+        if isinstance(cell_val, str) and cell_val.strip() == "Name":
+            header_row_idx = row_idx
+            break
+
+    # Delete everything above the header row
+    if header_row_idx and header_row_idx > 1:
+        _strip_images_on_rows(ws, max_row_to_strip=header_row_idx - 1)
+        ws.delete_rows(1, header_row_idx - 1)
 
     out_path = Path(output_path) if output_path else xlsx_path
     wb.save(out_path)

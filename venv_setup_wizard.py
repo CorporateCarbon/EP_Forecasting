@@ -36,7 +36,8 @@ REQUIRED_PACKAGES: List[str] = [
     "customtkinter",
     "xlwings",
     "python-dateutil",
-    "pywin32"
+    "pywin32",
+    "pandas"
     # Example packages — replace with what your script needs:
     # "requests>=2.32.0",
     # "pandas==2.2.3",
