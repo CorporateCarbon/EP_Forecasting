@@ -79,10 +79,9 @@ class App(tk.Tk):
         ttk.Entry(date_frame, textvariable=self.var_start_day, width=4).pack(side="left")
 
         # Discount checkbox
-        ttk.Checkbutton(
+        ttk.Label(
             inputs,
-            text="Discount Abatement",
-            variable=self.var_discount
+            text="Dates must match FullCAM Schedule (End of month). Above details are for first RP you are forecasting."
         ).grid(row=3, column=1, sticky="w", pady=6)
 
         # NEW: Forecast lifecycle checkbox

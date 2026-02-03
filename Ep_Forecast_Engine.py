@@ -129,6 +129,11 @@ class ForecastEngineXL:
                 mapping[key] = idx
         return mapping
 
+    def final_rp_end_from_project_end(project_end_date):
+        # last day of the month before project_end_date's month
+        first_of_end_month = project_end_date.replace(day=1)
+        return first_of_end_month - timedelta(days=1)
+
     def get_project_start_date(self) -> datetime:
         """
         Find 'Project Start Date' in column D and return corresponding column E value.
@@ -215,11 +220,13 @@ def run_engine(config: EngineConfig) -> None:
         if config.forecast_number_of_rps is not None:
             n_rps = int(config.forecast_number_of_rps)
         else:
-            project_start = month_end(engine.get_project_start_date())
-            project_end = month_end(project_start + relativedelta(years=25))
+            raw_project_start = engine.get_project_start_date()
+            project_end = raw_project_start + relativedelta(years=25)
+
+            final_rp_end = project_end.replace(day=1) - timedelta(days=1)
 
             current_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
-            months_to_end = (project_end.year - current_end.year) * 12 + (project_end.month - current_end.month)
+            months_to_end = (final_rp_end.year - current_end.year) * 12 + (final_rp_end.month - current_end.month)
             print("4")
             n_rps = months_to_end // rp_len
             if months_to_end % rp_len != 0:
@@ -252,6 +259,10 @@ def run_engine(config: EngineConfig) -> None:
             print("Loop start")
             rp_num = start_rp_num + i
             next_rp_end = add_months_month_end(current_rp_end, rp_len)
+
+            if i == n_rps - 1:
+                next_rp_end = final_rp_end   # override the last RP end
+
 
             rp_end_dt, accus = engine.write_inputs_and_get_accus(
                 rp_number=rp_num,
