@@ -18,7 +18,6 @@ class AppConfig:
     forecast_number_of_rps: int | None
 
     input_calculator_file: str
-    save_raw_output: str
     save_aggregated_output: str
 
 
@@ -55,7 +54,6 @@ class App(tk.Tk):
         self.var_forecast_num_rps = tk.StringVar(value="")
 
         self.var_input_file = tk.StringVar(value="")
-        self.var_save_raw = tk.StringVar(value="")
         self.var_save_agg = tk.StringVar(value="")
 
         def add_labeled_entry(parent, row, label, var, width=18):
@@ -116,15 +114,9 @@ class App(tk.Tk):
             self.var_input_file,
             self._browse_input_file
         )
+
         add_file_picker(
             1,
-            "Save Raw Output",
-            self.var_save_raw,
-            self._browse_save_raw,
-            button_text="Save as…"
-        )
-        add_file_picker(
-            2,
             "Save Aggregated Output",
             self.var_save_agg,
             self._browse_save_agg,
@@ -160,18 +152,7 @@ class App(tk.Tk):
         if path:
             self.var_input_file.set(path)
 
-    def _browse_save_raw(self):
-        path = filedialog.asksaveasfilename(
-            title="Save Raw Output As",
-            defaultextension=".xlsx",
-            filetypes=[
-                ("Excel files", "*.xlsx"),
-                ("CSV files", "*.csv"),
-                ("All files", "*.*"),
-            ],
-        )
-        if path:
-            self.var_save_raw.set(path)
+
 
     def _browse_save_agg(self):
         path = filedialog.asksaveasfilename(
@@ -243,13 +224,11 @@ class App(tk.Tk):
                 raise ValueError("Forecast Number of RPs must be greater than 0.")
 
         input_file = self.var_input_file.get().strip()
-        save_raw = self.var_save_raw.get().strip()
         save_agg = self.var_save_agg.get().strip()
 
         if not input_file:
             raise ValueError("Input Calculator File is required.")
-        if not save_raw:
-            raise ValueError("Save Raw Output path is required.")
+
         if not save_agg:
             raise ValueError("Save Aggregated Output path is required.")
 
@@ -263,7 +242,6 @@ class App(tk.Tk):
             forecast_full_lifecycle=forecast_full,
             forecast_number_of_rps=forecast_num,
             input_calculator_file=input_file,
-            save_raw_output=save_raw,
             save_aggregated_output=save_agg,
         )
 
@@ -278,7 +256,6 @@ def run_process(config: AppConfig):
         forecast_full_lifecycle=config.forecast_full_lifecycle,
         forecast_number_of_rps=config.forecast_number_of_rps,
         input_calculator_file=config.input_calculator_file,
-        save_raw_output=config.save_raw_output,
         save_aggregated_output=config.save_aggregated_output,
     )
     run_engine(engine_config)

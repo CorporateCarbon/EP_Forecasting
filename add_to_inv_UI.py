@@ -13,7 +13,6 @@ class AppConfig:
     forecast_workbook: str
     master_inventory_workbook: str
     declared_project_portfolio_workbook: str
-    save_master_inventory_output: str
     save_forecast_delta_output: str
 
 
@@ -37,7 +36,6 @@ class App(tk.Tk):
         self.var_forecast_file = tk.StringVar(value="")
         self.var_master_inventory_file = tk.StringVar(value="")
         self.var_declared_portfolio_file = tk.StringVar(value="")
-        self.var_save_master_inventory = tk.StringVar(value="")
         self.var_save_forecast_delta = tk.StringVar(value="")
 
         def add_file_picker(row, label, var, browse_cmd, button_text="Browse…"):
@@ -53,15 +51,9 @@ class App(tk.Tk):
         # NEW INPUT
         add_file_picker(2, "Declared Projects Portfolio", self.var_declared_portfolio_file, self._browse_declared_portfolio_file)
 
+
         add_file_picker(
             3,
-            "Save Output Master Inventory",
-            self.var_save_master_inventory,
-            self._browse_save_master_inventory,
-            button_text="Save as…",
-        )
-        add_file_picker(
-            4,
             "Save Forecast Delta",
             self.var_save_forecast_delta,
             self._browse_save_forecast_delta,
@@ -101,14 +93,7 @@ class App(tk.Tk):
         if path:
             self.var_declared_portfolio_file.set(path)
 
-    def _browse_save_master_inventory(self):
-        path = filedialog.asksaveasfilename(
-            title="Save Output Master Inventory As",
-            defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-        )
-        if path:
-            self.var_save_master_inventory.set(path)
+
 
     def _browse_save_forecast_delta(self):
         path = filedialog.asksaveasfilename(
@@ -142,7 +127,6 @@ class App(tk.Tk):
         forecast_file = self.var_forecast_file.get().strip()
         master_file = self.var_master_inventory_file.get().strip()
         portfolio_file = self.var_declared_portfolio_file.get().strip()
-        save_master = self.var_save_master_inventory.get().strip()
         save_delta = self.var_save_forecast_delta.get().strip()
 
         if not forecast_file:
@@ -151,8 +135,7 @@ class App(tk.Tk):
             raise ValueError("Master Inventory Workbook is required.")
         if not portfolio_file:
             raise ValueError("Declared Projects Portfolio Workbook is required.")
-        if not save_master:
-            raise ValueError("Save Output Master Inventory path is required.")
+
         if not save_delta:
             raise ValueError("Save Forecast Delta path is required.")
 
@@ -160,7 +143,6 @@ class App(tk.Tk):
             forecast_workbook=forecast_file,
             master_inventory_workbook=master_file,
             declared_project_portfolio_workbook=portfolio_file,
-            save_master_inventory_output=save_master,
             save_forecast_delta_output=save_delta,
         )
 

@@ -14,7 +14,6 @@ class AppConfig:
     forecast_workbook: str
     master_inventory_workbook: str
     declared_project_portfolio_workbook: str
-    save_master_inventory_output: str
     save_forecast_delta_output: str
 
 
@@ -350,10 +349,6 @@ def add_forecast_to_inventory(config: AppConfig) -> None:
 
     lifetime_accu_delta = new_total - removed_total
 
-    # --- Save master inventory output ---
-    out_master = str(Path(config.save_master_inventory_output))
-    Path(out_master).parent.mkdir(parents=True, exist_ok=True)
-    m_wb.save(out_master)
 
     # --- Forecast delta workbook with 3 sheets ---
     delta_wb = Workbook()
