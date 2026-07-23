@@ -26,6 +26,22 @@ The abatement maths lives inside the calculator workbooks (`Forecast_script_help
 
 This matches the discount applied in the older per-project scripts (`delta * 0.75`), but is now correctly split into its two regulatory components (20% permanence-period discount for 25-year permanence + 5% risk-of-reversal buffer) and lives in the workbook rather than hard-coded in Python. **Conclusion: the forecast logic is correct.**
 
+### 2a. Independent validation (numbers reproduced from scratch)
+
+To confirm this beyond reading the formulas, the Blackwood forecast was **re-derived independently in Python** — straight from the raw FullCAM carbon time series in each CEA sheet, with no reference to the calculator's own formulas — and compared to the tool's own expected-output workbook (`Blackwood_Forecast_OUTPUT_EXAMPLE.xlsx`). The re-derivation used only: stock = Σ(CEA area × (C mass of trees + forest debris)) × 44/12, then (stock at RP end − stock at previous RP end) × 0.75.
+
+The result was an **exact match to the last decimal on every reporting period tested**:
+
+| RP | Reproduced | Tool output | Difference |
+|---|---|---|---|
+| 3 | 1053.337 | 1053.337 | 0.000000 |
+| 4 | 1119.209 | 1119.209 | 0.000000 |
+| 5 | 1123.273 | 1123.273 | 0.000000 |
+| 6 | 1085.989 | 1085.989 | 0.000000 |
+| 7 | 1034.404 | 1034.404 | 0.000000 |
+
+The validation script is saved in the repo as `validate_ep_forecast.py` (runs with openpyxl, no Excel required). This is strong evidence the tool is producing correct forecasts — and, since the whole calculation reproduces in ~30 lines of pure Python, it also demonstrates the maths can be re-implemented in code for the platform without desktop Excel.
+
 ## 3. Bugs found and fixed (on branch `review-fixes-20260723`)
 
 1. **Fixed-RP-count mode crash (functional bug).** In `run_engine`, `final_rp_end` is only computed in full-lifecycle mode. In "forecast N RPs" mode it stayed `None`, and the loop's last-RP override set the final RP's end date to `None` (crash / bad output). Fixed so the override only applies in full-lifecycle mode; fixed-count mode now keeps the normal RP cadence.
