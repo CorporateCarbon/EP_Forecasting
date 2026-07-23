@@ -129,11 +129,6 @@ class ForecastEngineXL:
                 mapping[key] = idx
         return mapping
 
-    def final_rp_end_from_project_end(project_end_date):
-        # last day of the month before project_end_date's month
-        first_of_end_month = project_end_date.replace(day=1)
-        return first_of_end_month - timedelta(days=1)
-
     def get_project_start_date(self) -> datetime:
         """
         Find 'Project Start Date' in column D and return corresponding column E value.
@@ -152,9 +147,6 @@ class ForecastEngineXL:
                     return excel_serial_to_datetime(val)
                 raise ValueError("Project Start Date in column E is not a valid date.")
         raise ValueError("Could not find 'Project Start Date' in column D.")
-
-    def rp_end_from_start(rp_start, rp_len_months):
-        return rp_start + relativedelta(months=rp_len_months)
 
     def write_inputs_and_get_accus(
         self,
@@ -209,6 +201,7 @@ def run_engine(config: EngineConfig) -> None:
     app.display_alerts = False
     app.screen_updating = False
     print("1.5")
+    calc_mode_prev = None  # kept defined so the finally-block restore never NameErrors
     # calc_mode_prev = app.calculation
     # app.calculation = "manual"  # faster; we explicitly calculate each iteration
     print("2")
@@ -265,7 +258,10 @@ def run_engine(config: EngineConfig) -> None:
 
 
             # Correctly manage final RP, RP length needs to be adjusted and end date correctly entered.
-            if i == n_rps - 1:
+            # Only pin the last RP to the project end in full-lifecycle mode. In fixed-count mode
+            # final_rp_end is None, so keep the normal RP cadence (previously this set the last
+            # RP end to None and crashed).
+            if i == n_rps - 1 and final_rp_end is not None:
                 next_rp_end = final_rp_end   # override the last RP end
                 rp_len = (
                     (final_rp_end.year - current_rp_start.year) * 12
@@ -304,7 +300,8 @@ def run_engine(config: EngineConfig) -> None:
     finally:
         # restore settings and quit excel
         try:
-            app.calculation = calc_mode_prev
+            if calc_mode_prev is not None:
+                app.calculation = calc_mode_prev
         except Exception:
             pass
         app.quit()
