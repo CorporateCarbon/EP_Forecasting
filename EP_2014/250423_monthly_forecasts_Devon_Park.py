@@ -1,9 +1,15 @@
 import os
+import sys
 import xlwings as xw
 import csv
 from datetime import datetime
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
-    
+
+# Excel cannot open paths of 256+ characters; helpers/excel_paths handles it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from helpers.excel_paths import open_workbook  # noqa: E402
+
 currentDate = datetime.now().strftime("%Y%m%d")
 excel_path = "C:/Users/EmilyHoward/Corporate Carbon Pty Ltd/Corporate Carbon - 04. CARBON DELIVERY/03. Procedures/ACCU forecasting/Monthly Forecasts/EP/Devon Park/Calculator/250429_DP_RP2_ACCU_Calculator_NO Treat SIMUL.xlsx"
 csvOut = f"C:/Users/EmilyHoward/Corporate Carbon Pty Ltd/Corporate Carbon - 04. CARBON DELIVERY/03. Procedures/ACCU forecasting/Monthly Forecasts/EP/Devon Park/{currentDate}_AbatementSummary_rp1.csv"
@@ -33,7 +39,7 @@ with open(csvOut, 'w', newline='') as myCSV:
                         'RAW_extract', 'C_Abatement'])
 
     app = xw.App(visible=True, add_book=False)
-    wb = app.books.open(excel_path)
+    wb = open_workbook(app, excel_path)
     print(f"Workbook loaded: {wb.name}")
     print("Sheets:", [s.name for s in wb.sheets])
 

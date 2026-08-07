@@ -15,10 +15,16 @@ After each recalculation, reads:
 
 # %%FY-based loop with dynamic FullCAM date (01/07 or 02/07), no discounts
 import os
+import sys
 import csv
 from datetime import datetime, date
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
 import xlwings as xw
+
+# Excel cannot open paths of 256+ characters; helpers/excel_paths handles it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from helpers.excel_paths import open_workbook  # noqa: E402
 
 # ----------------------------
 # User parameters
@@ -106,7 +112,7 @@ print(f"Generated {len(date_pairs)} FY ranges starting {output_start.strftime('%
 # Open workbook
 # ----------------------------
 app = xw.App(visible=True, add_book=False)
-wb = app.books.open(excel_path)
+wb = open_workbook(app, excel_path)
 
 try:
     summary = wb.sheets['Summary']

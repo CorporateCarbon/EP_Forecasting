@@ -1,10 +1,16 @@
 # v1 - forecast calculator for Coalara Permanent Stand Method
 #%%##
 import os
+import sys
 import csv
 from datetime import datetime
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
 import xlwings as xw
+
+# Excel cannot open paths of 256+ characters; helpers/excel_paths handles it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from helpers.excel_paths import open_workbook  # noqa: E402
 #%%##
    # excel_path = r"C:\Users\GeorginaDoyle\Downloads\FullCAM_Test\NewMethod(rp03)\Rp03_Calculator_test.xlsx"
    # csvOut = rf"C:\Users\GeorginaDoyle\Downloads\FullCAM_Test\NewMethod(rp03)\{currentDate}_Test_AbatementSummary.csv"
@@ -40,7 +46,7 @@ print(f"Generated {len(date_pairs)} date ranges.")
 
 # === Open Excel workbook ===
 app = xw.App(visible=True, add_book=False)
-wb = app.books.open(excel_path)
+wb = open_workbook(app, excel_path)
 
 try:
     summary_sheet = wb.sheets['Summary']
@@ -128,12 +134,18 @@ app.quit()
 print(f"✅ Processing complete. Yearly Summary saved to {csv_out}")
 
 # %%
-#V2 - Forecast Calulator for Coalara - Rotation Method (discount forest products) 
+#V2 - Forecast Calulator for Coalara - Rotation Method (discount forest products)
 import os
+import sys
 import csv
 from datetime import datetime
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
 import xlwings as xw
+
+# Excel cannot open paths of 256+ characters; helpers/excel_paths handles it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from helpers.excel_paths import open_workbook  # noqa: E402
 #%%##
 # === Setup ===
 excel_path = r"C:\Users\GeorginaDoyle\Downloads\241114_Coalara_RP2_ACCU_Calc.xlsx"
@@ -161,7 +173,7 @@ print(f"Generated {len(date_pairs)} date ranges.")
 
 # === Open Excel workbook ===
 app = xw.App(visible=True, add_book=False)
-wb = app.books.open(excel_path)
+wb = open_workbook(app, excel_path)
 
 try:
     summary_sheet = wb.sheets['Summary']

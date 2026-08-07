@@ -11,6 +11,8 @@ from dateutil.relativedelta import relativedelta
 import time
 import win32com.client as win32
 
+from helpers.excel_paths import open_workbook, save_workbook
+
 
 # ---------------- Config ----------------
 @dataclass
@@ -207,7 +209,7 @@ def run_engine(config: EngineConfig) -> None:
     print("2")
     try:
         # Open calculator workbook once
-        book = app.books.open(config.input_calculator_file)
+        book = open_workbook(app, config.input_calculator_file)
         engine = ForecastEngineXL(book)
         final_rp_end = None
         # Decide n_rps
@@ -288,7 +290,7 @@ def run_engine(config: EngineConfig) -> None:
             current_rp_end = next_rp_end
 
         # Save output
-        out_book.save(str(out_path))
+        save_workbook(out_book, out_path)
         out_book.close()
         print("loop close")
 

@@ -28,10 +28,16 @@ If your Calculated ACCU should apply a different rule than “equals Net abateme
 
 #%%##
 import os
+import sys
 import csv
 from datetime import datetime
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
 import xlwings as xw
+
+# Excel cannot open paths of 256+ characters; helpers/excel_paths handles it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from helpers.excel_paths import open_workbook  # noqa: E402
 #%%##
 excel_path = r"C:\Users\GeorginaDoyle\github\EP_Forecasting\PF_2020\Calculators\PF_Sch1_FC24_Calculator.xlsx" 
 out_dir = os.path.dirname(excel_path)
@@ -99,7 +105,7 @@ def run_forecast(excel_path, csv_out, project_start, horizon_years=None, visible
         raise FileNotFoundError(f"Excel file not found: {excel_path}")
 
     with xw.App(visible=visible, add_book=False) as app:
-        wb = app.books.open(excel_path)
+        wb = open_workbook(app, excel_path)
         ws_sum  = wb.sheets["Summary"]
         ws_calc = wb.sheets["Calculations"]
         ws_cea  = wb.sheets["CEA01"]
