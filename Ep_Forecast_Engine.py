@@ -29,6 +29,13 @@ class EngineConfig:
     input_calculator_file: str
     save_aggregated_output: str
 
+    # PATCH (2026-08-14): explicit CER-registered crediting-period end.
+    # ISO 'YYYY-MM-DD' string, or None to auto-read from the calculator
+    # (Forecast_script_helper!D:'Crediting Period End' -> col E). This is the
+    # AUTHORITATIVE forecast horizon; the old project_start+25yr inference is a
+    # fallback only. No ACCUs are forecast for any RP ending after this date.
+    crediting_period_end: str | None = None
+
 
 # ---------------- Date helpers ----------------
 def month_end(dt: datetime) -> datetime:
@@ -150,6 +157,27 @@ class ForecastEngineXL:
                 raise ValueError("Project Start Date in column E is not a valid date.")
         raise ValueError("Could not find 'Project Start Date' in column D.")
 
+    def get_crediting_period_end(self) -> datetime | None:
+        """
+        PATCH (2026-08-14): read the CER-registered crediting-period END date from
+        'Crediting Period End' in column D -> column E of Forecast_script_helper.
+        Returns None if the label is absent (caller then applies the +25yr fallback
+        WITH A WARNING). This decouples the horizon from the 25-yr permanence proxy,
+        which was the root cause of the Dogwood RP21-23 over-run.
+        """
+        colD = self.ws.range("D1:D300").value
+        if not isinstance(colD, list):
+            colD = [colD]
+        for idx, label in enumerate(colD, start=1):
+            if label and str(label).strip().lower() == "crediting period end":
+                val = self.ws.range((idx, 5)).value  # column E
+                if isinstance(val, datetime):
+                    return val
+                if isinstance(val, (int, float)):
+                    return excel_serial_to_datetime(val)
+                raise ValueError("Crediting Period End in column E is not a valid date.")
+        return None
+
     def write_inputs_and_get_accus(
         self,
         rp_number: int,
@@ -211,24 +239,40 @@ def run_engine(config: EngineConfig) -> None:
         # Open calculator workbook once
         book = open_workbook(app, config.input_calculator_file)
         engine = ForecastEngineXL(book)
-        final_rp_end = None
-        # Decide n_rps
         rp_len = int(config.rp_length_months)
         print("3")
-        if config.forecast_number_of_rps is not None:
-            n_rps = int(config.forecast_number_of_rps)
+
+        # PATCH (2026-08-14): resolve the crediting-period end ONCE, from an explicit
+        # source, and apply it as a hard cap in BOTH modes (see the loop below).
+        # Priority: config override -> calculator 'Crediting Period End' -> +25yr fallback.
+        crediting_end = None
+        if config.crediting_period_end:
+            crediting_end = datetime.strptime(config.crediting_period_end, "%Y-%m-%d")
         else:
+            crediting_end = engine.get_crediting_period_end()
+        if crediting_end is None:
             raw_project_start = engine.get_project_start_date()
-            project_end = raw_project_start + relativedelta(years=25)
+            crediting_end = (raw_project_start + relativedelta(years=25)).replace(day=1) - timedelta(days=1)
+            print(f"WARNING: no 'Crediting Period End' found; falling back to project_start+25yr "
+                  f"-> {crediting_end.date()}. This is the 25-yr assumption, NOT the registered "
+                  f"crediting period. Add 'Crediting Period End' to Forecast_script_helper to make it authoritative.")
+        crediting_end = month_end(crediting_end) if crediting_end.day >= 28 else crediting_end
+        print(f"Crediting-period end (cap): {crediting_end.date()}")
 
-            final_rp_end = project_end.replace(day=1) - timedelta(days=1)
+        # final_rp_end always known now; used to truncate the last RP to a partial period.
+        final_rp_end = crediting_end
 
-            current_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
-            months_to_end = (final_rp_end.year - current_end.year) * 12 + (final_rp_end.month - current_end.month)
-            print("4")
-            n_rps = months_to_end // rp_len
-            if months_to_end % rp_len != 0:
-                n_rps += 1
+        # Upper bound on RP count. The in-loop clamp is what actually enforces the cap,
+        # so fixed-count mode can never over-run the crediting period either.
+        current_end = month_end(datetime(config.start_year, config.start_month, config.start_day))
+        months_to_end = (final_rp_end.year - current_end.year) * 12 + (final_rp_end.month - current_end.month)
+        n_rps_by_end = months_to_end // rp_len + (1 if months_to_end % rp_len != 0 else 0)
+        print("4")
+        if config.forecast_number_of_rps is not None:
+            # honour the user's count, but never beyond the crediting period
+            n_rps = min(int(config.forecast_number_of_rps), n_rps_by_end)
+        else:
+            n_rps = n_rps_by_end
 
         # Create aggregated workbook (also via xlwings so saving is easy)
         out_book = app.books.add()
@@ -253,27 +297,33 @@ def run_engine(config: EngineConfig) -> None:
         current_rp_start = datetime(config.start_year, config.start_month, config.start_day)        
         print("6")
         # Loop RPs
+        rows_written = 0
+        last_rp_end = None
         for i in range(n_rps):
             print("Loop start")
             rp_num = start_rp_num + i
-            next_rp_end = current_rp_start + relativedelta(months=rp_len)
+            this_rp_len = rp_len
+            next_rp_end = current_rp_start + relativedelta(months=this_rp_len)
 
-
-            # Correctly manage final RP, RP length needs to be adjusted and end date correctly entered.
-            # Only pin the last RP to the project end in full-lifecycle mode. In fixed-count mode
-            # final_rp_end is None, so keep the normal RP cadence (previously this set the last
-            # RP end to None and crashed).
-            if i == n_rps - 1 and final_rp_end is not None:
-                next_rp_end = final_rp_end   # override the last RP end
-                rp_len = (
-                    (final_rp_end.year - current_rp_start.year) * 12
-                    + (final_rp_end.month - current_rp_start.month)
+            # PATCH (2026-08-14): AUTHORITATIVE crediting-period clamp, applied in EVERY
+            # mode. If this RP would end on/after the crediting-period end, truncate it to
+            # a PARTIAL period ending exactly on that date, emit it, then STOP. This is the
+            # single guard that prevents forecasting ACCUs beyond the crediting period
+            # (the Dogwood RP21-23 defect) and produces the correct partial final RP
+            # (e.g. RP20 = 1 Jan - 30 Jun 2036) regardless of lifecycle/fixed-count.
+            is_final = False
+            if next_rp_end >= crediting_end:
+                next_rp_end = crediting_end
+                this_rp_len = (
+                    (crediting_end.year - current_rp_start.year) * 12
+                    + (crediting_end.month - current_rp_start.month)
                 )
+                is_final = True
 
             rp_end_dt, accus = engine.write_inputs_and_get_accus(
                 rp_number=rp_num,
                 rp_end_date=next_rp_end,
-                rp_length_months=rp_len,
+                rp_length_months=this_rp_len,
             )
 
             # Write row (row index in Excel = i+2)
@@ -284,10 +334,26 @@ def run_engine(config: EngineConfig) -> None:
             out_sheet.range((row, 4)).value = current_rp_start
             out_sheet.range((row, 5)).value = rp_end_dt
             out_sheet.range((row, 6)).value = accus
+            rows_written += 1
+            last_rp_end = rp_end_dt
 
             # advance
             current_rp_start = next_rp_end
             current_rp_end = next_rp_end
+
+            if is_final:
+                print(f"Reached crediting-period end {crediting_end.date()} at RP {rp_num}; stopping.")
+                break
+
+        # PATCH (2026-08-14): QC assertion - no emitted RP may end after the crediting period.
+        # Cheap regression guard against a silent over-run.
+        if last_rp_end is not None and last_rp_end > crediting_end:
+            raise AssertionError(
+                f"QC FAIL: final RP end {last_rp_end.date()} is after crediting-period end "
+                f"{crediting_end.date()}. Aborting to avoid crediting beyond the registered period."
+            )
+        print(f"QC OK: {rows_written} RP(s) written; last RP ends {last_rp_end.date() if last_rp_end else 'n/a'} "
+              f"(<= crediting end {crediting_end.date()}).")
 
         # Save output
         save_workbook(out_book, out_path)
