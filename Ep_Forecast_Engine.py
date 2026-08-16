@@ -282,6 +282,12 @@ def run_engine(config: EngineConfig) -> None:
         # Headers
         project_name, registry_id = engine.get_project_metadata()
 
+        # PATCH (2026-08-15, KD review): split issuance from deficit. "ACCUs Realised" is
+        # floored at 0 (a negative reporting period issues nothing); the negative net
+        # abatement is recorded in its own column so it is visible but never reduces the
+        # issued total. The calculator itself carries the deficit forward via CV anchored
+        # at the last credited report, so the project only issues again once cumulative
+        # stock climbs back above its previously-credited level (Dogwood RP9 -> RP11).
         out_sheet.range("A1").value = [
             "Name",
             "Registry ID",
@@ -289,6 +295,7 @@ def run_engine(config: EngineConfig) -> None:
             "Reporting Period - Start",
             "Reporting Period - End",
             "ACCUs Realised",
+            "Net abatement (unissued, tCO2e)",
         ]
 
         # Starting dates
@@ -299,6 +306,7 @@ def run_engine(config: EngineConfig) -> None:
         # Loop RPs
         rows_written = 0
         last_rp_end = None
+        issued_total = 0   # PATCH (2026-08-15): sum of ISSUED ACCUs only (excludes deficits)
         for i in range(n_rps):
             print("Loop start")
             rp_num = start_rp_num + i
@@ -326,6 +334,14 @@ def run_engine(config: EngineConfig) -> None:
                 rp_length_months=this_rp_len,
             )
 
+            # PATCH (2026-08-15, KD review): floor issuance at 0; keep the negative aside.
+            try:
+                accus_num = float(accus) if accus is not None else 0.0
+            except (TypeError, ValueError):
+                accus_num = 0.0
+            accus_issued = accus_num if accus_num > 0 else 0
+            unissued_net = accus_num if accus_num < 0 else None
+
             # Write row (row index in Excel = i+2)
             row = i + 2
             out_sheet.range((row, 1)).value = project_name
@@ -333,7 +349,9 @@ def run_engine(config: EngineConfig) -> None:
             out_sheet.range((row, 3)).value = rp_num
             out_sheet.range((row, 4)).value = current_rp_start
             out_sheet.range((row, 5)).value = rp_end_dt
-            out_sheet.range((row, 6)).value = accus
+            out_sheet.range((row, 6)).value = accus_issued
+            out_sheet.range((row, 7)).value = unissued_net
+            issued_total += accus_issued
             rows_written += 1
             last_rp_end = rp_end_dt
 
@@ -354,6 +372,12 @@ def run_engine(config: EngineConfig) -> None:
             )
         print(f"QC OK: {rows_written} RP(s) written; last RP ends {last_rp_end.date() if last_rp_end else 'n/a'} "
               f"(<= crediting end {crediting_end.date()}).")
+
+        # PATCH (2026-08-15, KD review): TOTAL row sums ISSUED ACCUs only (never the deficits).
+        total_row = rows_written + 2
+        out_sheet.range((total_row, 5)).value = "Total issued"
+        out_sheet.range((total_row, 6)).value = issued_total
+        print(f"Total ISSUED ACCUs across forecast: {issued_total}")
 
         # Save output
         save_workbook(out_book, out_path)
