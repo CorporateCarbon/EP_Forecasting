@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from helpers.clean_mi_export import clean_mi_export
+from helpers.project_codes import project_code
 
 from openpyxl import load_workbook, Workbook
 import re
@@ -60,15 +61,11 @@ def _generate_inventory_id(row: Dict[str, Any]) -> str:
         return existing
 
     raw_name = str(row.get("Name") or "").strip()
-    raw_name_l = raw_name.lower()
 
-    # Exceptions (explicit, no Mt Mulgrave)
-    if raw_name_l.startswith("big creek"):
-        name_part = "Big "
-    elif raw_name_l.startswith("cpc beef herd"):
-        name_part = "CPC "
-    else:
-        name_part = "".join(re.findall(r"[A-Za-z]", raw_name))[:4].title() or "Proj"
+    # Registry ID first, then the legacy 'Big Creek' / 'CPC Beef Herd' name overrides, then the
+    # name-derived fallback -- all three now live in helpers/project_codes.py so that every
+    # generator agrees. The name alone is not unique: Paroo North and South both yield 'Paro'.
+    name_part = project_code(row.get("Registry ID"), raw_name)
 
     # Date part
     date_val = row.get("Date - Total Amount") or row.get("Estimated Issuance Date")
